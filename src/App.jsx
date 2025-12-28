@@ -7,6 +7,10 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 
 // --- 最终定稿版：漩涡喷发-边缘呼吸星系着色器 ---
 
+window.onerror = function (message, source, lineno, colno, error) {
+  alert('Error: ' + message + '\nLine: ' + lineno + '\nSource: ' + source);
+};
+
 const stellarVertexShader = `
   uniform float uTime;
   uniform float uFormation;      // 0.0 (漩涡态) -> 1.0 (融合态)
@@ -231,11 +235,11 @@ const stellarFragmentShader = `
     vec3 coreGlow = contrastedColor * strength * 1.2; 
     vec3 audioFlash = contrastedColor * uAudioHigh * 0.2;
 
-    vec3 finalColor = baseColor + coreGlow + vec3(beam) + audioFlash;
-    
-    gl_FragColor = vec4(finalColor, (strength + halo) * vAlpha);
+    gl_FragColor = vec4(baseColor + coreGlow + audioFlash, (strength + halo) * vAlpha);
   }
 `;
+
+// --- 歌词粒子逻辑已由 UI 方案取代 ---
 
 export default function App() {
   const containerRef = useRef(null);
@@ -245,6 +249,7 @@ export default function App() {
   const [audioData, setAudioData] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isStarted, setIsStarted] = useState(false);      // 是否已开始创世
 
   // 新增：可调节参数
   const [saturation, setSaturation] = useState(0.5);      // 饱和度 0-1
@@ -260,6 +265,32 @@ export default function App() {
   const [envRotation, setEnvRotation] = useState(0.1);    // 氛围旋转速度
   const [showControls, setShowControls] = useState(true); // 显示/隐藏控制面板
   const [mouseX, setMouseX] = useState(null);             // 鼠标在底栏的 X 坐标
+  const [stayDuration, setStayDuration] = useState(3);    // 停留时间 (秒)
+  const [morphDuration, setMorphDuration] = useState(6);  // 变换时长 (秒)
+
+  // Netease 音乐相关状态
+  const [musicUser, setMusicUser] = useState(null);       // 用户信息
+  const [loginQR, setLoginQR] = useState(null);           // 登录二维码 (base64)
+  const [cookie, setCookie] = useState('');               // Netease Cookie
+  const [playlists, setPlaylists] = useState([]);         // 收藏歌单
+  const [currentTrack, setCurrentTrack] = useState(null); // 当前播放歌曲
+  const [isMusicLoading, setIsMusicLoading] = useState(false);
+  const MUSIC_API = "http://localhost:4000";               // Netease API 端口 (与前端域名保持一致更稳定)
+
+  // 新增功能状态
+  const [musicMode, setMusicMode] = useState('playlist'); // 当前模式: playlist, recommend, fm, history
+  const [recommendSongs, setRecommendSongs] = useState([]); // 每日推荐歌曲
+  const [fmQueue, setFmQueue] = useState([]);             // 私人 FM 队列
+  const [historySongs, setHistorySongs] = useState([]);   // 听歌排行 (周)
+  const [lyrics, setLyrics] = useState([]);               // 歌词数据 [{time, text}]
+  const [currentLyric, setCurrentLyric] = useState("");   // 当前歌词
+  const [nextLyric, setNextLyric] = useState("");         // 下一句歌词 (用于预备 morph)
+
+  // 歌词自定义参数
+  const [lyricScale, setLyricScale] = useState(1.0);      // 大小
+  const [lyricDensity, setLyricDensity] = useState(2);    // 密度 (step: 1非常密 - 5稀疏)
+  const [lyricSpeed, setLyricSpeed] = useState(1.0);      // 飘散速度
+  const [lyricOffsetY, setLyricOffsetY] = useState(0);    // 上下偏移 (调回 0，配合基准)
 
   const sceneRef = useRef(null);
   const audioRef = useRef(null);
@@ -276,12 +307,39 @@ export default function App() {
   useEffect(() => { galleryRef.current = gallery; }, [gallery]);
 
   // 使用 ref 保存最新的参数值，供动画循环使用
-  const paramsRef = useRef({ saturation, brightness, contrast, twinkleStrength, morph, envRotation });
+  const paramsRef = useRef({
+    saturation, brightness, contrast, twinkleStrength, morph, envRotation,
+    lyricScale, lyricSpeed, lyricOffsetY
+  });
 
   // 每次参数变化时更新 ref
   useEffect(() => {
-    paramsRef.current = { saturation, brightness, contrast, twinkleStrength, morph, envRotation };
-  }, [saturation, brightness, contrast, twinkleStrength, morph, envRotation]);
+    paramsRef.current = {
+      saturation, brightness, contrast, twinkleStrength, morph, envRotation,
+      lyricScale, lyricSpeed, lyricOffsetY
+    };
+  }, [saturation, brightness, contrast, twinkleStrength, morph, envRotation, lyricScale, lyricSpeed, lyricOffsetY]);
+
+  // --- 登录持久化逻辑 ---
+  useEffect(() => {
+    const savedCookie = localStorage.getItem('netease_cookie');
+    if (savedCookie) {
+      setCookie(savedCookie);
+      fetchMusicUserInfo(savedCookie);
+    }
+  }, []);
+
+  // 退出登录
+  const handleLogout = () => {
+    localStorage.removeItem('netease_cookie');
+    setCookie('');
+    setMusicUser(null);
+    setPlaylists([]);
+    setSongList([]);
+    setCurrentTrack(null);
+    setLyrics([]);
+    setCurrentLyric("");
+  };
 
   useEffect(() => {
     console.log('useEffect 被调用');
@@ -390,6 +448,9 @@ export default function App() {
             }
           }
         }
+
+        // --- 歌词系统已由 UI 方案取代 ---
+
         controls.update();
         composer.render();
       }
@@ -457,46 +518,69 @@ export default function App() {
     }
   };
 
-  const handleMusicUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    if (audioRef.current) {
-      audioRef.current.audio.pause();
-      audioRef.current.audio.src = "";
-      if (audioRef.current.context.state !== 'closed') {
-        audioRef.current.context.close();
+  const handleStart = async () => {
+    setIsProcessing(true);
+    try {
+      // 核心改为：从后端接口获取当前文件夹内的所有图片
+      const listRes = await fetch(MUSIC_API + '/local/images');
+      let listData;
+      try {
+        listData = await listRes.json();
+      } catch (jsonErr) {
+        throw new Error("后端返回了非 JSON 数据，可能是路径错误或后端异常。" + jsonErr.message);
       }
-      audioRef.current = null;
+
+      let imageUrls = [];
+      if (listData.code === 200 && listData.images.length > 0) {
+        imageUrls = listData.images.map(name => '/image/' + name);
+      } else {
+        // 后退方案：如果接口失败或没图，保留最基础的核心素材
+        imageUrls = ['/image/b150350bc9b7290c8fe9351c8f787a1a.png'];
+        // 如果是 500 错误，也抛出异常以便弹窗
+        if (listData.code === 500) throw new Error(listData.error);
+      }
+
+      const loadedImages = await Promise.all(imageUrls.map(async (src) => {
+        const response = await fetch(src);
+        const blob = await response.blob();
+        const file = new File([blob], src.substring(src.lastIndexOf('/') + 1), { type: blob.type });
+        return processImage(file, 1, true);
+      }));
+
+      if (loadedImages.length > 0) {
+        const first = loadedImages[0];
+        setNebulaInfo({ name: first.name, lore: "创世基底已确立。", mainColor: first.mainColor });
+        initConstellation(first);
+
+        setGallery(loadedImages);
+        galleryRef.current = loadedImages;
+        setCurrentIdx(0);
+        currentIdxRef.current = 0;
+        setIsAutoCycle(true); // 默认开启自动流转
+        setTimeLeft(6); // 初始等待 6 秒
+
+        // 启动时显示闲置星团
+      }
+      setIsStarted(true);
+    } catch (err) {
+      console.error("动态加载本地图片失败:", err);
+      const msg = err.message || "Unknown Error";
+      alert("加载失败: " + msg + "\n请勿关闭后端黑窗口。如果提示 Failed to fetch，说明是 CORS 协议或网络连接被拦截。");
+    } finally {
+      setIsProcessing(false);
     }
 
-    const url = URL.createObjectURL(file);
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    const ctx = new AudioContext();
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 512;
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-    const audio = new Audio();
-    audio.src = url;
-    audio.loop = true;
-    audio.crossOrigin = "anonymous";
-
-    const source = ctx.createMediaElementSource(audio);
-    source.connect(analyser);
-    analyser.connect(ctx.destination);
-
-    audio.play();
-    setIsPlaying(true);
-
-    audioRef.current = {
-      audio,
-      context: ctx,
-      analyser,
-      dataArray
-    };
-
-    setAudioData({ name: file.name });
+    // 如果想要默认播放音乐，可以在这里处理 (目前全靠网易云)
+    if (!audioRef.current) {
+      // Example: Load a default background music if needed
+      // const audio = new Audio('/audio/default_bg_music.mp3');
+      // audio.loop = true;
+      // audio.crossOrigin = "anonymous";
+      // audio.play();
+      // audioRef.current = { audio, context: null, analyser: null, dataArray: null };
+      // setIsPlaying(true);
+      // setAudioData({ name: 'Default Background Music' });
+    }
   };
 
   const togglePlay = () => {
@@ -664,7 +748,7 @@ export default function App() {
           const avgR = tc > 0 ? Math.round(tr / tc * 255) : 127;
           const avgG = tc > 0 ? Math.round(tg / tc * 255) : 127;
           const avgB = tc > 0 ? Math.round(tb / tc * 255) : 127;
-          const mainColor = `#${avgR.toString(16).padStart(2, '0')}${avgG.toString(16).padStart(2, '0')}${avgB.toString(16).padStart(2, '0')}`;
+          const mainColor = `#${avgR.toString(16).padStart(2, '0')}${avgG.toString(16).padStart(2, '0')}${avgB.toString(16).padStart(2, '0')} `;
 
           const thumbCanvas = document.createElement('canvas');
           thumbCanvas.width = 64; thumbCanvas.height = 64;
@@ -703,6 +787,7 @@ export default function App() {
       galleryRef.current = results;
       setCurrentIdx(0);
       currentIdxRef.current = 0;
+      setIsStarted(true); // Mark as started when images are uploaded
     } else if (results.length > 0) {
       const newItems = [...gallery, ...results];
       setGallery(newItems);
@@ -820,15 +905,78 @@ export default function App() {
     setNebulaInfo({ name: nextItem.name, lore: "能量相位同步，开启新一轮演化。", mainColor: nextItem.mainColor });
 
     // 4. 重置倒计时并启动动画
-    setTimeLeft(3);
+    setTimeLeft(stayDuration);
     setMorph(0);
     startMorphEvolution();
+  };
+
+  const processTextToPoints = (text, density = 2) => {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 2048; // 增加画布宽度
+    canvas.height = 256;
+
+    // 核心优化：使用用户提供的像素字体 'UranusPixel'
+    // 像素字体不需要太大的字重，我们设定一个适中的字号
+    let fontSize = 80;
+    ctx.font = `400 ${fontSize}px "UranusPixel", sans-serif`;
+
+    // 自动缩放字体以适应宽度
+    let textWidth = ctx.measureText(text).width;
+    if (textWidth > canvas.width * 0.9) {
+      fontSize = Math.floor(fontSize * (canvas.width * 0.9 / textWidth));
+      ctx.font = `400 ${fontSize}px "UranusPixel", sans-serif`;
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'white';
+
+    // 核心修复：如果 text 为空或字符串 "null"，直接返回空点集
+    if (!text || text === 'null') return [];
+
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const allOpaqueIndices = [];
+    for (let i = 0; i < imageData.length; i += 4) {
+      if (imageData[i] > 128) allOpaqueIndices.push(i / 4);
+    }
+
+    const MAX_PARTICLES = 60000; // 再次提升上限到 6万，确保长句也密集
+    let finalIndices = allOpaqueIndices;
+
+    // 核心修复：如果像数点过多，使用“随机抽样”而非“固定步长抽样”
+    // 这能彻底消除由于固定步长导致的水平扫描线感 ( aliasing )
+    if (allOpaqueIndices.length > MAX_PARTICLES) {
+      finalIndices = [];
+      const len = allOpaqueIndices.length;
+      for (let i = 0; i < MAX_PARTICLES; i++) {
+        // 随机抽取 6万个不重复的点（近似快速实现）
+        const randIdx = Math.floor(Math.random() * len);
+        finalIndices.push(allOpaqueIndices[randIdx]);
+      }
+    }
+
+    const points = [];
+    for (let i = 0; i < finalIndices.length; i++) {
+      const pixelIdx = finalIndices[i];
+      const x = pixelIdx % canvas.width;
+      const y = Math.floor(pixelIdx / canvas.width);
+
+      // 坐标映射：稍微缩小横向比例，防止文字拉伸，并微调缩放
+      const px = (x - canvas.width / 2) * 0.08;
+      const py = (canvas.height / 2 - y) * 0.08;
+      const pz = 0;
+      points.push([px, py, pz]);
+    }
+    return points;
   };
 
   const startMorphEvolution = () => {
     setIsMorphing(true);
     let startTimestamp = null;
-    const duration = 6000;
+    const duration = morphDuration * 1000;
 
     const step = (timestamp) => {
       if (!startTimestamp) startTimestamp = timestamp;
@@ -870,13 +1018,396 @@ export default function App() {
     }
   }, [timeLeft, isAutoCycle, isMorphing, gallery.length]);
 
+  // 歌词定时同步
+  useEffect(() => {
+    if (!audioRef.current || lyrics.length === 0) return;
+    const audio = audioRef.current.audio;
+    const handleTimeUpdate = () => {
+      const time = audio.currentTime;
+      let targetLyric = "";
+      for (let i = lyrics.length - 1; i >= 0; i--) {
+        if (time >= lyrics[i].time) {
+          targetLyric = lyrics[i].text;
+          break;
+        }
+      }
+      if (targetLyric !== currentLyric) {
+        setCurrentLyric(targetLyric);
+      }
+    };
+    audio.addEventListener('timeupdate', handleTimeUpdate);
+    return () => audio.removeEventListener('timeupdate', handleTimeUpdate);
+  }, [lyrics, currentLyric]);
+
+  // 歌词定时同步（由 currentLyric 状态驱动 UI）
+  useEffect(() => {
+    if (isStarted) {
+      // 这里可以做一些 UI 触发逻辑
+    }
+  }, [currentLyric, isStarted]);
+
+
+  // 监听歌曲结束，如果是 FM 模式自动下一首
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio || !audio.audio) return; // Ensure audio.audio exists
+
+    const handleEnded = () => {
+      if (musicMode === 'fm') {
+        playNextFM();
+      }
+    };
+
+    audio.audio.addEventListener('ended', handleEnded);
+    return () => audio.audio.removeEventListener('ended', handleEnded);
+  }, [musicMode, fmQueue, audioRef.current]); // Add audioRef.current to dependencies
+
+  // --- 网易云音乐逻辑实现 ---
+
+  // 1. 获取登录二维码 key 并生成二维码
+  const getLoginQR = async () => {
+    try {
+      setIsMusicLoading(true);
+      // 1. 获取 key
+      const keyRes = await fetch(`${MUSIC_API}/login/qr/key?timestamp=${Date.now()}`);
+      const keyData = await keyRes.json();
+      const key = keyData.data.unikey;
+
+      // 2. 生成二维码
+      const qrRes = await fetch(`${MUSIC_API}/login/qr/create?key=${key}&qrimg=true&timestamp=${Date.now()}`);
+      const qrData = await qrRes.json();
+
+      setLoginQR(qrData.data.qrimg);
+
+      // 3. 开始轮询
+      checkLoginStatus(key);
+
+    } catch (err) {
+      console.error("获取二维码失败:", err);
+      // 精确显示报错详情，诊断 CORS 或网络问题
+      const detail = err.message || "Unknown Error";
+      alert('登录连接失败: ' + detail + '\n(请确保后端 4000 端口已开启且未被防火墙拦截)');
+    } finally {
+      setIsMusicLoading(false);
+    }
+  };
+
+  // 2. 轮询登录状态
+  const checkLoginStatus = (key) => {
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch(`${MUSIC_API}/login/qr/check?key=${key}&timestamp=${Date.now()}`);
+        const data = await res.json();
+
+        // 800 为二维码过期, 801 为等待扫码, 802 为待确认, 803 为授权登录成功
+        if (data.code === 800) {
+          alert('二维码已过期，请刷新');
+          clearInterval(timer);
+        } else if (data.code === 803) {
+          clearInterval(timer);
+          const newCookie = data.cookie;
+          setCookie(newCookie);
+          localStorage.setItem('netease_cookie', newCookie); // 持久化存储
+          setLoginQR(null);
+          // 获取用户信息
+          fetchMusicUserInfo(newCookie);
+        }
+      } catch (err) {
+        console.error("轮询失败:", err);
+        clearInterval(timer);
+      }
+    }, 2000);
+  };
+
+  // 3. 获取用户信息及歌单
+  const fetchMusicUserInfo = async (userCookie) => {
+    try {
+      setIsMusicLoading(true);
+      const cookieStr = encodeURIComponent(userCookie || cookie);
+
+      // 获取账号信息
+      const userRes = await fetch(`${MUSIC_API}/user/account?cookie=${cookieStr}`);
+      const userData = await userRes.json();
+
+      if (userData.code === 200 && userData.profile) {
+        setMusicUser({
+          nickname: userData.profile.nickname,
+          avatar: userData.profile.avatarUrl,
+          uid: userData.profile.userId
+        });
+
+        // 获取歌单
+        const plRes = await fetch(`${MUSIC_API}/user/playlist?uid=${userData.profile.userId}&cookie=${cookieStr}`);
+        const plData = await plRes.json();
+
+        if (plData.code === 200) {
+          setPlaylists(plData.playlist.map(item => ({
+            name: item.name,
+            img: item.coverImgUrl,
+            id: item.id,
+            count: item.trackCount
+          })));
+        }
+      }
+    } catch (err) {
+      console.error("获取网易云数据失败:", err);
+    } finally {
+      setIsMusicLoading(false);
+    }
+  };
+
+  // 4. 获取歌单歌曲列表
+  const fetchPlaylistSongs = async (pid) => {
+    try {
+      setIsMusicLoading(true);
+      const cookieStr = encodeURIComponent(cookie);
+      // 获取歌单所有歌曲
+      const res = await fetch(`${MUSIC_API}/playlist/track/all?id=${pid}&limit=30&offset=0&cookie=${cookieStr}`);
+      const data = await res.json();
+
+      if (data.code === 200) {
+        setSongList(data.songs.map(s => ({
+          name: s.name,
+          artist: s.ar[0].name,
+          album: s.al.name,
+          id: s.id,
+          albumArt: s.al.picUrl
+        })));
+        setShowSongList(true);
+      }
+    } catch (err) {
+      console.error("获取歌单歌曲失败:", err);
+    } finally {
+      setIsMusicLoading(false);
+    }
+  };
+
+  // --- 新增功能实现 ---
+
+  // 4.1 获取每日推荐
+  const fetchDailyRecommend = async () => {
+    try {
+      setIsMusicLoading(true);
+      const cookieStr = encodeURIComponent(cookie);
+      const res = await fetch(`${MUSIC_API}/recommend/songs?cookie=${cookieStr}`);
+      const data = await res.json();
+
+      if (data.code === 200) {
+        setRecommendSongs(data.data.dailySongs.map(s => ({
+          name: s.name,
+          artist: s.ar[0].name,
+          album: s.al.name,
+          id: s.id,
+          albumArt: s.al.picUrl
+        })));
+        setMusicMode('recommend');
+      } else {
+        alert('获取推荐失败，请确保已登录');
+      }
+    } catch (err) {
+      console.error("获取日推失败:", err);
+    } finally {
+      setIsMusicLoading(false);
+    }
+  };
+
+  // 4.2 获取私人 FM (需要特殊处理队列)
+  const fetchPersonalFM = async (isInit = false) => {
+    try {
+      if (!isInit) setIsMusicLoading(true);
+      const cookieStr = encodeURIComponent(cookie);
+      const res = await fetch(`${MUSIC_API}/personal_fm?timestamp=${Date.now()}&cookie=${cookieStr}`);
+      const data = await res.json();
+
+      if (data.code === 200) {
+        const newTracks = data.data.map(s => ({
+          name: s.name,
+          artist: s.artists[0].name,
+          album: s.album.name,
+          id: s.id,
+          albumArt: s.album.picUrl
+        }));
+
+        if (isInit) {
+          setFmQueue(newTracks);
+          // 立即播放第一首
+          if (newTracks.length > 0) playOnlineSong(newTracks[0]);
+          setMusicMode('fm');
+        } else {
+          // 追加到队列
+          setFmQueue(prev => [...prev, ...newTracks]);
+        }
+      }
+    } catch (err) {
+      console.error("获取FM失败:", err);
+    } finally {
+      if (!isInit) setIsMusicLoading(false);
+    }
+  };
+
+  const playNextFM = () => {
+    // FM 逻辑：移除当前首，播放下一首。如果队列快空了，预加载。
+    const nextQueue = [...fmQueue];
+    nextQueue.shift(); // 移除刚刚播放的
+    setFmQueue(nextQueue);
+
+    if (nextQueue.length === 0) {
+      fetchPersonalFM(true);
+    } else {
+      if (nextQueue.length < 3) fetchPersonalFM(false); // 预加载
+      playOnlineSong(nextQueue[0]);
+    }
+  };
+
+  const startFM = () => {
+    setMusicMode('fm');
+    fetchPersonalFM(true);
+  }
+
+  // 4.3 获取听歌排行 (周榜 type=1)
+  const fetchListeningHistory = async () => {
+    try {
+      setIsMusicLoading(true);
+      const cookieStr = encodeURIComponent(cookie);
+      const res = await fetch(`${MUSIC_API}/user/record?uid=${musicUser.uid}&type=1&cookie=${cookieStr}`);
+      const data = await res.json();
+
+      if (data.code === 200) {
+        setHistorySongs(data.weekData.map(item => ({
+          name: item.song.name,
+          artist: item.song.ar[0].name,
+          album: item.song.al.name,
+          id: item.song.id,
+          albumArt: item.song.al.picUrl,
+          score: item.score // 热度分数
+        })));
+        setMusicMode('history');
+      }
+    } catch (err) {
+      console.error("获取听歌排行失败:", err);
+    } finally {
+      setIsMusicLoading(false);
+    }
+  };
+
+  // 5. 播放歌曲 (获取播放链接)
+  const playOnlineSong = async (song) => {
+    try {
+      setIsMusicLoading(true);
+      const cookieStr = encodeURIComponent(cookie);
+      // 获取标准音质
+      const res = await fetch(`${MUSIC_API}/song/url?id=${song.id}&cookie=${cookieStr}`);
+      const data = await res.json();
+
+      if (data.code === 200 && data.data && data.data[0]) {
+        const musicUrl = data.data[0].url;
+        if (!musicUrl) {
+          alert('无法获取该歌曲链接（可能是VIP专享或无版权）');
+          return;
+        }
+
+        // Initialize AudioContext and Analyser if not already done
+        if (!audioRef.current || !audioRef.current.audio) {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          const ctx = new AudioContext();
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 512;
+          const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+          const audio = new Audio();
+          audio.loop = false; // FM mode handles looping/next song
+          audio.crossOrigin = "anonymous";
+
+          const source = ctx.createMediaElementSource(audio);
+          source.connect(analyser);
+          analyser.connect(ctx.destination);
+
+          audioRef.current = {
+            audio,
+            context: ctx,
+            analyser,
+            dataArray
+          };
+        }
+
+        audioRef.current.audio.src = musicUrl;
+        audioRef.current.audio.play();
+        setIsPlaying(true);
+        setAudioData({ name: song.name, url: musicUrl });
+        setCurrentTrack(song);
+        fetchLyrics(song.id); // 获取歌词
+      }
+    } catch (err) {
+      console.error("启动在线播放失败:", err);
+    } finally {
+      setIsMusicLoading(false);
+    }
+  };
+
+  // --- 歌词处理逻辑 ---
+  const parseLRC = (lrcString) => {
+    if (!lrcString) return [];
+    const lines = lrcString.split('\n');
+    const result = [];
+    // 兼容 [00:00.00], [00:00.000], [00:00] 等格式
+    const timeReg = /\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]/;
+
+    for (const line of lines) {
+      const match = timeReg.exec(line);
+      if (match) {
+        const min = parseInt(match[1]);
+        const sec = parseInt(match[2]);
+        const msStr = match[3] || '000';
+        const ms = parseInt(msStr.length === 3 ? msStr : msStr * 10);
+        const time = min * 60 + sec + ms / 1000;
+        const text = line.replace(/\[.*?\]/g, '').trim(); // 移除所有中括号标签
+        if (text) result.push({ time, text });
+      }
+    }
+    // 按时间排序，防止某些 LRC 乱序
+    return result.sort((a, b) => a.time - b.time);
+  };
+
+  const fetchLyrics = async (id) => {
+    try {
+      const cookieStr = encodeURIComponent(cookie);
+      // 增加 cookie 传递，某些加密歌词需要登录态
+      const res = await fetch(`${MUSIC_API}/lyric?id=${id}&cookie=${cookieStr}`);
+      const data = await res.json();
+
+      console.log("[歌词中心] 原始数据:", data);
+
+      if (data.lrc && data.lrc.lyric) {
+        const parsed = parseLRC(data.lrc.lyric);
+        if (parsed.length > 0) {
+          setLyrics(parsed);
+          setCurrentLyric("");
+          console.log(`[歌词中心] 解析成功: ${parsed.length} 行`);
+        } else {
+          setLyrics([]);
+          setCurrentLyric("歌词格式无法解析");
+        }
+      } else {
+        setLyrics([]);
+        setCurrentLyric("纯音乐 / 暂无存库歌词");
+      }
+    } catch (err) {
+      console.error("[歌词中心] 获取失败:", err);
+      setLyrics([]);
+      setCurrentLyric("歌词获取失败 (连接超时)");
+    }
+  };
+
+  const [songList, setSongList] = useState([]);      // 当前查看到的歌曲列表
+  const [showSongList, setShowSongList] = useState(false); // 是否显示歌单详情
+
   return (
     <div className="relative w-full h-screen bg-[#000001] overflow-hidden text-white font-sans">
       <div ref={containerRef} className="absolute inset-0 z-0" />
       <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.6)_100%)]" />
 
       {/* 左上角控制面板 */}
-      {showControls && nebulaInfo && (
+      {isStarted && showControls && nebulaInfo && (
         <div className="absolute top-6 left-6 w-80 p-6 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-3xl pointer-events-auto z-30">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-sm font-light tracking-widest uppercase text-blue-200">可视化控制</h3>
@@ -918,22 +1449,58 @@ export default function App() {
               <input type="range" min="-1" max="3" step="0.05" value={twinkleStrength} onChange={(e) => setTwinkleStrength(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
             </div>
 
+            <div className="pt-2 border-t border-white/5">
+              <label className="text-[10px] text-blue-300/80 tracking-wider uppercase block mb-2">停留时长: {stayDuration}s</label>
+              <input type="range" min="1" max="10" step="1" value={stayDuration} onChange={(e) => setStayDuration(parseInt(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
+            </div>
+
+            <div>
+              <label className="text-[10px] text-blue-300/80 tracking-wider uppercase block mb-2">变换速度: {morphDuration}s</label>
+              <input type="range" min="1" max="15" step="0.5" value={morphDuration} onChange={(e) => setMorphDuration(parseFloat(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
+            </div>
+
+            <div className="h-[1px] w-full bg-white/5 my-2" />
+
+            {/* 歌词设置 (折叠面板) */}
+            <details className="mt-4 group open:bg-white/5 rounded-xl transition-all border border-transparent open:border-white/10 overflow-hidden">
+              <summary className="flex items-center justify-between p-3 cursor-pointer hover:bg-white/5 transition-all">
+                <span className="text-[10px] text-white/40 uppercase tracking-widest font-bold group-open:text-blue-400">歌词设置 Lyric Display</span>
+                <span className="text-white/20 text-[8px] transform group-open:rotate-180 transition-transform">▼</span>
+              </summary>
+              <div className="p-3 pt-0 space-y-4">
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center px-1">
+                    <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">字体缩放 Scale</label>
+                    <span className="text-[9px] font-mono text-blue-400/80">{lyricScale.toFixed(2)}x</span>
+                  </div>
+                  <input
+                    type="range" min="0.5" max="2.5" step="0.05"
+                    value={lyricScale}
+                    onChange={(e) => setLyricScale(parseFloat(e.target.value))}
+                    className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                  />
+                </div>
+              </div>
+            </details>
+
+            <div className="h-[1px] w-full bg-white/5 my-2" />
+
             <button
-              onClick={() => { setSaturation(0.5); setBrightness(1.1); setContrast(1.2); setTwinkleStrength(0.3); setMorph(0); setIsAutoCycle(false); }}
+              onClick={() => {
+                setSaturation(0.5); setBrightness(1.1); setContrast(1.2); setTwinkleStrength(0.3);
+                setStayDuration(3); setMorphDuration(6);
+                setMorph(0); setIsAutoCycle(false);
+              }}
               className="w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full transition-all"
             >
-              重置参数
+              重置色彩与节奏
             </button>
 
             {/* 集成式堆叠图库 */}
             {gallery.length > 0 && (
               <div className="pt-4 border-t border-white/5 mt-2">
                 <div className="flex justify-between items-center mb-2 px-1">
-                  <span className="text-[9px] text-white/30 uppercase tracking-[0.2em]">星系序列 ({gallery.length})</span>
-                  <label className="text-[9px] text-blue-400/60 hover:text-blue-400 cursor-pointer tracking-wider">
-                    <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
-                    + 扩充
-                  </label>
+                  <span className="text-[9px] text-white/30 uppercase tracking-[0.2em]">星辰预览 ({gallery.length})</span>
                 </div>
                 <div
                   ref={scrollContainerRef}
@@ -943,25 +1510,20 @@ export default function App() {
                     const rect = scrollContainerRef.current.getBoundingClientRect();
                     const x = e.clientX - rect.left;
                     const width = rect.width;
-
-                    // 边缘检测触发滚动 (左/右 15%)
                     const edgeSize = width * 0.2;
                     if (x < edgeSize) {
-                      // 向左滑
                       if (!scrollScrollInterval.current) {
                         scrollScrollInterval.current = setInterval(() => {
                           if (scrollContainerRef.current) scrollContainerRef.current.scrollLeft -= 5;
                         }, 16);
                       }
                     } else if (x > width - edgeSize) {
-                      // 向右滑
                       if (!scrollScrollInterval.current) {
                         scrollScrollInterval.current = setInterval(() => {
                           if (scrollContainerRef.current) scrollContainerRef.current.scrollLeft += 5;
                         }, 16);
                       }
                     } else {
-                      // 停止滑动
                       if (scrollScrollInterval.current) {
                         clearInterval(scrollScrollInterval.current);
                         scrollScrollInterval.current = null;
@@ -989,6 +1551,21 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            <div className="pt-2 border-t border-white/5 space-y-2">
+              <div className="flex gap-2">
+                <button className="flex-1 py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full transition-all" onClick={() => { setNebulaInfo(null); setGallery([]); setIsAutoCycle(true); setMorph(0); setTimeLeft(0); setCurrentIdx(0); setIsStarted(false); }}>退出创世</button>
+                <label className="flex-1 py-2 text-[9px] tracking-wider uppercase bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-300 rounded-full cursor-pointer text-center flex items-center justify-center">
+                  <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
+                  + 扩充
+                </label>
+              </div>
+              {/* Removed music upload button */}
+              {audioData && (
+                <button className={isPlaying ? 'w-full py-2 text-[9px] tracking-wider uppercase bg-blue-500/20 text-blue-200 border border-blue-500/20 rounded-full' : 'w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full'} onClick={togglePlay}>{isPlaying ? "⏸ 暂停" : "▶ 播放"}</button>
+              )}
+              <button className={isRecording ? 'w-full py-2 text-[9px] tracking-wider uppercase bg-red-500/20 text-red-200 border border-red-500/20 rounded-full animate-pulse' : 'w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full'} onClick={toggleRecording}>{isRecording ? "🔴 停止录制" : "⭕ 开启录制"}</button>
+            </div>
           </div>
         </div>
       )}
@@ -999,32 +1576,25 @@ export default function App() {
 
       <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-between p-6">
         <div className="flex-1 flex flex-col items-center justify-center text-center">
-          {!nebulaInfo && !isProcessing && (
-            <div className="max-w-xl pointer-events-auto animate-in fade-in zoom-in duration-1000">
-              <h1 className="text-5xl font-thin tracking-[1.2em] mb-4 uppercase text-transparent bg-clip-text bg-gradient-to-r from-blue-100 via-white to-blue-400 text-center">STELLAR GALAXY</h1>
-              <p className="text-xs font-light tracking-[0.5em] opacity-30 mb-16 uppercase italic text-center">多维流转 · 奇点喷发 · 粒子守恒</p>
-              <div className="flex gap-4 pointer-events-auto justify-center">
-                <label className="group relative inline-block cursor-pointer">
-                  <input type="file" accept="audio/*" onChange={handleMusicUpload} className="hidden" />
-                  <div className="px-8 py-4 border border-white/10 rounded-full bg-white/5 backdrop-blur-xl transition-all duration-300 hover:bg-white hover:text-black hover:border-white">
-                    <span className="mr-2">♪</span>
-                    <span className="tracking-[0.2em] font-medium text-xs">{audioData ? "更换音乐" : "上传音乐"}</span>
-                  </div>
-                </label>
-                <label className="group relative inline-block cursor-pointer">
-                  <input type="file" accept="image/*" multiple onChange={handleMultiUpload} className="hidden" />
-                  <div className="px-16 py-4 border border-white/10 rounded-full bg-white/5 backdrop-blur-xl transition-all duration-500 hover:bg-white hover:text-black hover:border-white">
-                    <span className="mr-3 opacity-60 group-hover:opacity-100">✦</span>
-                    <span className="tracking-[0.4em] font-medium text-xs">启动创世</span>
-                  </div>
-                </label>
-              </div>
-              {audioData && (
-                <div className="mt-6 flex items-center gap-4 pointer-events-auto animate-in fade-in slide-in-from-bottom-4 justify-center">
-                  <button onClick={togglePlay} className="w-10 h-10 flex items-center justify-center rounded-full border border-white/20 bg-white/5 hover:bg-white/20 transition-all">{isPlaying ? "⏸" : "▶"}</button>
-                  <div className="text-[10px] opacity-60 tracking-widest uppercase truncate max-w-[200px]">{isPlaying ? "Playing: " : "Paused: "} {audioData.name}</div>
-                </div>
-              )}
+          {!isStarted && !isProcessing && (
+            <div className="max-w-xl pointer-events-auto animate-in fade-in zoom-in duration-1000 flex flex-col items-center">
+              <h1 className="text-6xl font-thin tracking-[1.2em] mb-8 uppercase text-transparent bg-clip-text bg-gradient-to-r from-blue-100 via-white to-blue-400 text-center select-none mr-[-1.2em]">STELLAR GALAXY</h1>
+              <p className="text-sm font-light tracking-[0.6em] opacity-40 mb-24 uppercase italic text-center select-none mr-[-0.6em]">多维流转 · 奇点喷发 · 粒子守恒</p>
+
+              <button
+                onClick={handleStart}
+                className="group relative w-64 h-16 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full backdrop-blur-md transition-all duration-500 overflow-hidden flex items-center justify-center"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/0 via-blue-500/10 to-blue-500/0 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-1000" />
+
+                {/* 装饰星号：绝对定位保持平衡 */}
+                <span className="absolute left-6 text-blue-400 animate-pulse text-xl">✦</span>
+
+                {/* 文字：绝对居中 */}
+                <span className="text-lg font-light tracking-[0.5em] text-white group-hover:text-blue-200 transition-colors mr-[-0.5em]">
+                  启动 创世
+                </span>
+              </button>
             </div>
           )}
 
@@ -1034,34 +1604,270 @@ export default function App() {
               <p className="text-[10px] tracking-[0.6em] font-light uppercase opacity-40">初始化奇点漩涡...</p>
             </div>
           )}
-
-          {nebulaInfo && !isProcessing && (
-            <div className="absolute bottom-10 left-10 max-w-xs w-full p-8 bg-black/60 backdrop-blur-3xl border border-white/5 rounded-[2.5rem] animate-in slide-in-from-left-12 duration-1000 pointer-events-auto text-left">
-              <h2 className="text-lg font-light tracking-widest text-blue-100 uppercase leading-tight mb-2">{isMorphing ? (nebulaInfo2?.name || "Target Form") : nebulaInfo.name}</h2>
-              <div className="h-[1px] w-full bg-gradient-to-r from-blue-500/30 to-transparent mb-4" />
-              <p className="text-[11px] font-light leading-relaxed text-white/50 italic mb-8">{isMorphing ? (nebulaInfo2?.lore || "维度跃入新形态...") : nebulaInfo.lore}</p>
-
-              <div className="flex flex-col gap-3">
-                <div className="flex gap-2">
-                  <button className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full transition-all" onClick={() => { setNebulaInfo(null); setGallery([]); setIsAutoCycle(true); setMorph(0); setTimeLeft(0); setCurrentIdx(0); }}>重置</button>
-                  <label className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full cursor-pointer text-center flex items-center justify-center">
-                    <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
-                    扩充
-                  </label>
-                </div>
-                <label className="w-full py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-white bg-white/5 hover:bg-white/10 border border-white/20 rounded-full cursor-pointer text-center flex items-center justify-center">
-                  <input type="file" accept="audio/*" onChange={handleMusicUpload} className="hidden" />
-                  🎵 音乐配置
-                </label>
-                {audioData && (
-                  <button className={isPlaying ? 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-blue-500/20 text-blue-200' : 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-white/5 hover:bg-white/10 text-white/50'} onClick={togglePlay}>{isPlaying ? "⏸ 暂停" : "▶ 播放"}</button>
-                )}
-                <button className={isRecording ? 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-red-500/20 text-red-200 animate-pulse' : 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-white/5 hover:bg-white/10'} onClick={toggleRecording}>{isRecording ? "🔴 停止" : "⭕ 录制"}</button>
-              </div>
-            </div>
-          )}
         </div>
       </div>
+      {/* 右侧音乐面板 (网易云音乐指令中心) */}
+      {nebulaInfo && (
+        <div className="absolute top-6 right-6 w-80 h-[calc(100vh-48px)] flex flex-col pointer-events-none z-30">
+          <div className="flex-1 p-6 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-3xl pointer-events-auto flex flex-col overflow-hidden">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-sm font-light tracking-widest uppercase text-blue-200">音乐指令中心</h3>
+              <div className="flex items-center gap-2">
+                <div className={`w-1.5 h-1.5 rounded-full ${musicUser ? 'bg-green-500' : 'bg-red-500'} animate-pulse`} />
+                <span className="text-[10px] text-white/30 tracking-tight">{musicUser ? '已连接' : '未登录'}</span>
+              </div>
+            </div>
+
+            {!musicUser ? (
+              <div className="flex-1 flex flex-col items-center justify-center space-y-6">
+                {!loginQR ? (
+                  <button
+                    onClick={getLoginQR}
+                    disabled={isMusicLoading}
+                    className="px-8 py-3 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 rounded-full text-[10px] tracking-[0.2em] uppercase transition-all disabled:opacity-50"
+                  >
+                    {isMusicLoading ? '获取中...' : '扫码登录网易云'}
+                  </button>
+                ) : (
+                  <div className="flex flex-col items-center space-y-4">
+                    <div className="p-3 bg-white rounded-2xl overflow-hidden w-40 h-40">
+                      <img src={loginQR} alt="QR Code" className="w-full h-full object-contain" />
+                    </div>
+                    <p className="text-[10px] text-white/40 tracking-wider">请使用网易云音乐 APP 扫码</p>
+                  </div>
+                )}
+                <p className="text-[9px] text-white/20 text-center leading-relaxed">
+                  不再需要抓取 Cookie<br />
+                  扫码即可同步您的歌单
+                </p>
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* 用户信息 */}
+                <div className="flex items-center gap-3 mb-6 p-3 bg-white/5 rounded-2xl border border-white/5 group relative">
+                  <img src={musicUser.avatar} className="w-10 h-10 rounded-full border border-blue-500/30" alt="avatar" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-blue-100 truncate">{musicUser.nickname}</p>
+                    <p className="text-[9px] text-white/30 uppercase tracking-tighter">探索者</p>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    title="退出登录"
+                    className="opacity-0 group-hover:opacity-100 p-2 text-white/40 hover:text-red-400 transition-all text-xs"
+                  >
+                    Logout
+                  </button>
+                </div>
+
+                {/* 功能导航 tabs */}
+                <div className="flex bg-white/5 rounded-xl p-1 mb-4">
+                  {[
+                    { id: 'playlist', icon: '📂', label: '歌单' },
+                    { id: 'recommend', icon: '📅', label: '日推' },
+                    { id: 'fm', icon: '📻', label: 'FM' },
+                    { id: 'history', icon: '🕒', label: '排行' },
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => {
+                        setMusicMode(tab.id);
+                        setShowSongList(false);
+                        if (tab.id === 'recommend') fetchDailyRecommend();
+                        if (tab.id === 'fm') startFM();
+                        if (tab.id === 'history') fetchListeningHistory();
+                        if (tab.id === 'playlist') { /* 已经加载过了 */ }
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg text-[10px] transition-all flex items-center justify-center gap-1 ${musicMode === tab.id ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white/80 hover:bg-white/5'}`}
+                    >
+                      <span>{tab.icon}</span>
+                      <span>{tab.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* 歌单/歌曲/功能 切换容器 */}
+                <div className="flex-1 overflow-y-auto no-scrollbar space-y-2 mb-4">
+                  {/* --- 模式：歌单 --- */}
+                  {musicMode === 'playlist' && (
+                    !showSongList ? (
+                      <>
+                        <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">我的网易云歌单</p>
+                        {playlists.length === 0 ? (
+                          <div className="h-32 flex items-center justify-center border border-white/5 border-dashed rounded-2xl">
+                            <span className="text-[10px] text-white/10 italic">暂无同步数据</span>
+                          </div>
+                        ) : (
+                          playlists.map((pl, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => fetchPlaylistSongs(pl.id)}
+                              className="w-full p-3 flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-left group"
+                            >
+                              <div className="w-8 h-8 bg-blue-500/20 rounded-lg flex items-center justify-center overflow-hidden">
+                                {pl.img ? <img src={pl.img} className="w-full h-full object-cover" /> : <span className="text-xs text-blue-400">♫</span>}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[11px] text-white/60 group-hover:text-blue-200 truncate">{pl.name}</p>
+                                <p className="text-[9px] text-white/20">{pl.count} 首歌曲</p>
+                              </div>
+                            </button>
+                          ))
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between mb-2 px-1">
+                          <p className="text-[9px] text-white/20 uppercase tracking-[0.2em]">歌曲列表 ({songList.length})</p>
+                          <button onClick={() => setShowSongList(false)} className="text-[9px] text-blue-400/60 hover:text-blue-400 tracking-wider">返回歌单</button>
+                        </div>
+                        {songList.map((song, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => playOnlineSong(song)}
+                            className={`w-full p-2 flex items-center gap-3 rounded-lg transition-all text-left group ${currentTrack?.id === song.id ? 'bg-blue-500/10 border border-blue-500/20' : 'hover:bg-white/5'}`}
+                          >
+                            <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 text-[10px] text-white/20 group-hover:text-blue-400">
+                              {currentTrack?.id === song.id ? '▶' : idx + 1}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className={`text-[11px] ${currentTrack?.id === song.id ? 'text-blue-200' : 'text-white/60'} truncate`}>{song.name}</p>
+                              <p className="text-[9px] text-white/20 truncate">{song.artist}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </>
+                    )
+                  )}
+
+                  {/* --- 模式：每日推荐 --- */}
+                  {musicMode === 'recommend' && (
+                    <>
+                      <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">📅 每日推荐 ({recommendSongs.length})</p>
+                      {recommendSongs.map((song, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => playOnlineSong(song)}
+                          className={`w-full p-2 flex items-center gap-3 rounded-lg transition-all text-left group ${currentTrack?.id === song.id ? 'bg-blue-500/10 border border-blue-500/20' : 'hover:bg-white/5'}`}
+                        >
+                          <div className="w-8 h-8 rounded overflow-hidden bg-white/5 relative">
+                            <img src={song.albumArt} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" />
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                              <span className="text-[10px] text-white">{currentTrack?.id === song.id ? '▶' : ''}</span>
+                            </div>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-[11px] ${currentTrack?.id === song.id ? 'text-blue-200' : 'text-white/60'} truncate`}>{song.name}</p>
+                            <p className="text-[9px] text-white/20 truncate">{song.artist} - {song.album}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </>
+                  )}
+
+                  {/* --- 模式：私人 FM --- */}
+                  {musicMode === 'fm' && (
+                    <div className="h-full flex flex-col items-center justify-center p-4">
+                      <div className={`w-40 h-40 rounded-full border-4 border-white/5 mb-6 relative overflow-hidden ${isPlaying ? 'animate-[spin_20s_linear_infinite]' : ''}`}>
+                        <img src={currentTrack?.albumArt || "https://y.gtimg.cn/mediastyle/global/img/person_300.png"} className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 bg-black/20" />
+                      </div>
+                      <h3 className="text-sm font-medium text-white mb-2 text-center">{currentTrack?.name || "这里是私人 FM"}</h3>
+                      <p className="text-[10px] text-white/40 mb-8">{currentTrack?.artist || "听懂你的心声"}</p>
+
+                      <div className="flex gap-4">
+                        <button onClick={() => { /* 喜欢逻辑暂留坑 */ alert('喜欢功能开发中') }} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-500 border border-white/10 flex items-center justify-center transition-all">
+                          ❤
+                        </button>
+                        <button onClick={playNextFM} className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 text-white border border-white/10 flex items-center justify-center transition-all">
+                          ➡
+                        </button>
+                      </div>
+                      <p className="text-[9px] text-white/10 mt-6">算法根据您的听歌历史实时推荐</p>
+                    </div>
+                  )}
+
+                  {/* --- 模式：听歌排行 --- */}
+                  {musicMode === 'history' && (
+                    <>
+                      <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">🏆 本周听歌排行</p>
+                      {historySongs.map((song, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => playOnlineSong(song)}
+                          className={`w-full p-2 flex items-center gap-3 rounded-lg transition-all text-left group ${currentTrack?.id === song.id ? 'bg-blue-500/10 border border-blue-500/20' : 'hover:bg-white/5'}`}
+                        >
+                          <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 font-mono font-bold text-xs italic text-white/10 group-hover:text-amber-500">
+                            {idx + 1}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-[11px] ${currentTrack?.id === song.id ? 'text-blue-200' : 'text-white/60'} truncate`}>{song.name}</p>
+                            <div className="flex items-center gap-2">
+                              <div className="h-1 bg-white/5 rounded-full flex-1 overflow-hidden">
+                                <div className="h-full bg-amber-500/50" style={{ width: `${song.score}%` }} />
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+
+                {/* 当前播放 */}
+                <div className={`pt-4 border-t border-white/10 transition-all duration-500 ${currentTrack ? 'opacity-100 translate-y-0' : 'opacity-20 translate-y-4 pointer-events-none'}`}>
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className={`w-12 h-12 rounded-full overflow-hidden border border-blue-500/50 ${isPlaying ? 'animate-[spin_10s_linear_infinite]' : ''}`}>
+                      <img src={currentTrack?.albumArt || "https://y.gtimg.cn/music/photo_new/T002R300x300M000002e3nFs3ZIs62.jpg"} className="w-full h-full object-cover" alt="album" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-blue-100 truncate">{currentTrack?.name || "未在播放"}</p>
+                      <p className="text-[10px] text-white/30 truncate">{currentTrack?.artist || "星辰旋律"}</p>
+                    </div>
+                  </div>
+
+                  {/* 歌词动态显示 (面板版) */}
+                  <div className="h-10 flex items-center justify-center text-center px-2 mb-4 bg-white/5 rounded-xl border border-white/5">
+                    <p className="text-[10px] text-blue-200/70 italic line-clamp-1">
+                      {currentLyric || (lyrics.length > 0 ? "～ 宇宙信号同步中 ～" : "暂无歌词数据")}
+                    </p>
+                  </div>
+
+                  <div className="flex justify-between gap-2">
+                    <button className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded-full text-xs transition-all">⏮</button>
+                    <button
+                      onClick={togglePlay}
+                      className="flex-1 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded-full text-xs transition-all"
+                    >
+                      {isPlaying ? "⏸" : "▶"}
+                    </button>
+                    <button className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded-full text-xs transition-all">⏭</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => { setMusicUser(null); setLoginQR(null); setCookie(''); }}
+              className="mt-4 py-2 text-[9px] text-white/20 hover:text-red-400/60 uppercase tracking-widest transition-all"
+            >
+              断开连接
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* --- 全局顶部悬浮歌词 (UI Mirror) --- */}
+      {currentLyric && isStarted && (
+        <div className="fixed top-[8%] left-1/2 -translate-x-1/2 z-[999] pointer-events-none w-full max-w-4xl px-4 flex flex-col items-center">
+          <div className="lyric-mirror-container">
+            <p className="lyric-mirror-text" style={{ fontSize: `${lyricScale * 24}px` }}>
+              {currentLyric}
+            </p>
+            {/* 扫光装饰线 */}
+            <div className="lyric-mirror-scanline" />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

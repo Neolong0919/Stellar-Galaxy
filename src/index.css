@@ -1,3 +1,8 @@
+@font-face {
+  font-family: 'UranusPixel';
+  src: url('/Uranus_Pixel_11Px.ttf') format('truetype');
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -117,6 +122,82 @@ body {
 .menu-gallery-item.active .mini-dot {
   opacity: 1;
   animation: dot-glow 1.5s infinite;
+}
+
+/* Lyric Mirror UI (Top Floating Glassmorphism) */
+.lyric-mirror-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 15px 40px;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(20px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.5),
+    inset 0 0 20px rgba(59, 130, 246, 0.1);
+  animation: lyric-appear 0.8s cubic-bezier(0.23, 1, 0.32, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.lyric-mirror-text {
+  font-family: 'UranusPixel', sans-serif;
+  color: #fff;
+  text-align: center;
+  letter-spacing: 0.1em;
+  text-shadow:
+    0 0 10px rgba(59, 130, 246, 0.8),
+    0 0 20px rgba(59, 130, 246, 0.4),
+    0 0 40px rgba(59, 130, 246, 0.2);
+  margin: 0;
+  transition: all 0.5s ease;
+  line-height: 1.4;
+}
+
+.lyric-mirror-scanline {
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(to right,
+      transparent,
+      rgba(59, 130, 246, 0.05),
+      rgba(255, 255, 255, 0.1),
+      rgba(59, 130, 246, 0.05),
+      transparent);
+  transform: skewX(-20deg);
+  animation: lyric-scan 4s infinite linear;
+}
+
+@keyframes lyric-appear {
+  0% {
+    transform: translateY(-30px);
+    opacity: 0;
+    filter: blur(10px);
+  }
+
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+@keyframes lyric-scan {
+  0% {
+    left: -100%;
+  }
+
+  30% {
+    left: 150%;
+  }
+
+  100% {
+    left: 150%;
+  }
 }
 
 @keyframes dot-glow {
