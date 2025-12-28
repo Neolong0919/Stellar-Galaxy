@@ -259,11 +259,14 @@ export default function App() {
   const [currentIdx, setCurrentIdx] = useState(0);        // 当前显示的索引
   const [envRotation, setEnvRotation] = useState(0.1);    // 氛围旋转速度
   const [showControls, setShowControls] = useState(true); // 显示/隐藏控制面板
+  const [mouseX, setMouseX] = useState(null);             // 鼠标在底栏的 X 坐标
 
   const sceneRef = useRef(null);
   const audioRef = useRef(null);
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
+  const scrollContainerRef = useRef(null); // 新增：滚动容器 Ref
+  const scrollScrollInterval = useRef(null); // 新增：滚动定时器 Ref
 
   // 关键 Ref：确保侧效应始终能拿到最新的状态，解决“第一张/最后一张不循环”的闭连捕获问题
   const currentIdxRef = useRef(0);
@@ -921,6 +924,71 @@ export default function App() {
             >
               重置参数
             </button>
+
+            {/* 集成式堆叠图库 */}
+            {gallery.length > 0 && (
+              <div className="pt-4 border-t border-white/5 mt-2">
+                <div className="flex justify-between items-center mb-2 px-1">
+                  <span className="text-[9px] text-white/30 uppercase tracking-[0.2em]">星系序列 ({gallery.length})</span>
+                  <label className="text-[9px] text-blue-400/60 hover:text-blue-400 cursor-pointer tracking-wider">
+                    <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
+                    + 扩充
+                  </label>
+                </div>
+                <div
+                  ref={scrollContainerRef}
+                  className="menu-gallery-stack no-scrollbar"
+                  onMouseMove={(e) => {
+                    if (!scrollContainerRef.current) return;
+                    const rect = scrollContainerRef.current.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const width = rect.width;
+
+                    // 边缘检测触发滚动 (左/右 15%)
+                    const edgeSize = width * 0.2;
+                    if (x < edgeSize) {
+                      // 向左滑
+                      if (!scrollScrollInterval.current) {
+                        scrollScrollInterval.current = setInterval(() => {
+                          if (scrollContainerRef.current) scrollContainerRef.current.scrollLeft -= 5;
+                        }, 16);
+                      }
+                    } else if (x > width - edgeSize) {
+                      // 向右滑
+                      if (!scrollScrollInterval.current) {
+                        scrollScrollInterval.current = setInterval(() => {
+                          if (scrollContainerRef.current) scrollContainerRef.current.scrollLeft += 5;
+                        }, 16);
+                      }
+                    } else {
+                      // 停止滑动
+                      if (scrollScrollInterval.current) {
+                        clearInterval(scrollScrollInterval.current);
+                        scrollScrollInterval.current = null;
+                      }
+                    }
+                  }}
+                  onMouseLeave={() => {
+                    if (scrollScrollInterval.current) {
+                      clearInterval(scrollScrollInterval.current);
+                      scrollScrollInterval.current = null;
+                    }
+                  }}
+                >
+                  {gallery.map((item, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => triggerNextMorph(item)}
+                      className={`menu-gallery-item ${currentIdx === idx ? 'active' : ''}`}
+                      title={item.name}
+                    >
+                      <img src={item.thumb} alt={item.name} />
+                      <div className="mini-dot" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -929,31 +997,8 @@ export default function App() {
         <button onClick={() => setShowControls(true)} className="absolute top-6 left-6 w-10 h-10 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-full flex items-center justify-center pointer-events-auto z-30 hover:bg-white/20 transition-all">⚙️</button>
       )}
 
-      <div className="absolute inset-0 z-20 pointer-events-none flex items-center p-6">
-        {/* 左侧正方形图库 */}
-        {nebulaInfo && !isProcessing && gallery.length > 0 && (
-          <div className="left-gallery-container no-scrollbar">
-            {gallery.map((item, idx) => (
-              <div
-                key={idx}
-                onClick={() => triggerNextMorph(item)}
-                className={`square-card ${currentIdx === idx ? 'active' : ''}`}
-                title={item.name}
-              >
-                <img src={item.thumb} alt={item.name} />
-                {currentIdx === idx && <div className="active-indicator" />}
-              </div>
-            ))}
-
-            {/* 快速上传入口 */}
-            <label className="square-card flex items-center justify-center bg-white/5 border-dashed hover:bg-white/10 hover:border-blue-500/50">
-              <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
-              <span className="text-xl text-white/30 font-thin">+</span>
-            </label>
-          </div>
-        )}
-
-        <div className="flex-1 flex flex-col items-center justify-center text-center pointer-events-none">
+      <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-between p-6">
+        <div className="flex-1 flex flex-col items-center justify-center text-center">
           {!nebulaInfo && !isProcessing && (
             <div className="max-w-xl pointer-events-auto animate-in fade-in zoom-in duration-1000">
               <h1 className="text-5xl font-thin tracking-[1.2em] mb-4 uppercase text-transparent bg-clip-text bg-gradient-to-r from-blue-100 via-white to-blue-400 text-center">STELLAR GALAXY</h1>
@@ -989,33 +1034,33 @@ export default function App() {
               <p className="text-[10px] tracking-[0.6em] font-light uppercase opacity-40">初始化奇点漩涡...</p>
             </div>
           )}
-        </div>
 
-        {nebulaInfo && !isProcessing && (
-          <div className="absolute bottom-10 left-10 max-w-xs w-full p-8 bg-black/60 backdrop-blur-3xl border border-white/5 rounded-[2.5rem] animate-in slide-in-from-left-12 duration-1000 pointer-events-auto text-left">
-            <h2 className="text-lg font-light tracking-widest text-blue-100 uppercase leading-tight mb-2">{isMorphing ? (nebulaInfo2?.name || "Target Form") : nebulaInfo.name}</h2>
-            <div className="h-[1px] w-full bg-gradient-to-r from-blue-500/30 to-transparent mb-4" />
-            <p className="text-[11px] font-light leading-relaxed text-white/50 italic mb-8">{isMorphing ? (nebulaInfo2?.lore || "维度跃入新形态...") : nebulaInfo.lore}</p>
+          {nebulaInfo && !isProcessing && (
+            <div className="absolute bottom-10 left-10 max-w-xs w-full p-8 bg-black/60 backdrop-blur-3xl border border-white/5 rounded-[2.5rem] animate-in slide-in-from-left-12 duration-1000 pointer-events-auto text-left">
+              <h2 className="text-lg font-light tracking-widest text-blue-100 uppercase leading-tight mb-2">{isMorphing ? (nebulaInfo2?.name || "Target Form") : nebulaInfo.name}</h2>
+              <div className="h-[1px] w-full bg-gradient-to-r from-blue-500/30 to-transparent mb-4" />
+              <p className="text-[11px] font-light leading-relaxed text-white/50 italic mb-8">{isMorphing ? (nebulaInfo2?.lore || "维度跃入新形态...") : nebulaInfo.lore}</p>
 
-            <div className="flex flex-col gap-3">
-              <div className="flex gap-2">
-                <button className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full transition-all" onClick={() => { setNebulaInfo(null); setGallery([]); setIsAutoCycle(true); setMorph(0); setTimeLeft(0); setCurrentIdx(0); }}>重置</button>
-                <label className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full cursor-pointer text-center flex items-center justify-center">
-                  <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
-                  扩充
+              <div className="flex flex-col gap-3">
+                <div className="flex gap-2">
+                  <button className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full transition-all" onClick={() => { setNebulaInfo(null); setGallery([]); setIsAutoCycle(true); setMorph(0); setTimeLeft(0); setCurrentIdx(0); }}>重置</button>
+                  <label className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full cursor-pointer text-center flex items-center justify-center">
+                    <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
+                    扩充
+                  </label>
+                </div>
+                <label className="w-full py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-white bg-white/5 hover:bg-white/10 border border-white/20 rounded-full cursor-pointer text-center flex items-center justify-center">
+                  <input type="file" accept="audio/*" onChange={handleMusicUpload} className="hidden" />
+                  🎵 音乐配置
                 </label>
+                {audioData && (
+                  <button className={isPlaying ? 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-blue-500/20 text-blue-200' : 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-white/5 hover:bg-white/10 text-white/50'} onClick={togglePlay}>{isPlaying ? "⏸ 暂停" : "▶ 播放"}</button>
+                )}
+                <button className={isRecording ? 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-red-500/20 text-red-200 animate-pulse' : 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-white/5 hover:bg-white/10'} onClick={toggleRecording}>{isRecording ? "🔴 停止" : "⭕ 录制"}</button>
               </div>
-              <label className="w-full py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-white bg-white/5 hover:bg-white/10 border border-white/20 rounded-full cursor-pointer text-center flex items-center justify-center">
-                <input type="file" accept="audio/*" onChange={handleMusicUpload} className="hidden" />
-                🎵 音乐配置
-              </label>
-              {audioData && (
-                <button className={isPlaying ? 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-blue-500/20 text-blue-200' : 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-white/5 hover:bg-white/10 text-white/50'} onClick={togglePlay}>{isPlaying ? "⏸ 暂停" : "▶ 播放"}</button>
-              )}
-              <button className={isRecording ? 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-red-500/20 text-red-200 animate-pulse' : 'w-full py-2 text-[10px] tracking-[0.2em] uppercase transition-all border border-white/10 rounded-full bg-white/5 hover:bg-white/10'} onClick={toggleRecording}>{isRecording ? "🔴 停止" : "⭕ 录制"}</button>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
