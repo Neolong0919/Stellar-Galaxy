@@ -265,6 +265,13 @@ export default function App() {
   const recorderRef = useRef(null);
   const chunksRef = useRef([]);
 
+  // 关键 Ref：确保侧效应始终能拿到最新的状态，解决“第一张/最后一张不循环”的闭连捕获问题
+  const currentIdxRef = useRef(0);
+  const galleryRef = useRef([]);
+
+  useEffect(() => { currentIdxRef.current = currentIdx; }, [currentIdx]);
+  useEffect(() => { galleryRef.current = gallery; }, [gallery]);
+
   // 使用 ref 保存最新的参数值，供动画循环使用
   const paramsRef = useRef({ saturation, brightness, contrast, twinkleStrength, morph, envRotation });
 
@@ -370,10 +377,10 @@ export default function App() {
 
           if (startTime > 0) {
             const dt = time - startTime;
-            if (dt < 2.0) {
+            if (dt < 1.0) {
               m.uniforms.uFormation.value = 0.0;
-            } else if (dt < 9.0) {
-              const progress = (dt - 2.0) / 7.0;
+            } else if (dt < 5.0) {
+              const progress = (dt - 1.0) / 4.0;
               m.uniforms.uFormation.value = progress;
             } else {
               m.uniforms.uFormation.value = 1.0;
@@ -600,9 +607,9 @@ export default function App() {
             subIdx++;
           }
           while (auraIdx < AURA_LIMIT) {
-            const src = Math.floor(Math.random() * (subIdx || 1)) * 3;
+            const src = Math.floor(Math.random() * activeSubCount) * 3;
             const angle = Math.random() * Math.PI * 2;
-            const radius = spreadX * (0.6 + Math.random() * 0.9); // 确保有足够半径
+            const radius = spreadX * (0.6 + Math.random() * 0.9);
             const i3 = auraIdx * 3;
             pos[i3] = Math.cos(angle) * radius;
             pos[i3 + 1] = (Math.random() - 0.5) * spreadY * 2.5;
@@ -622,10 +629,8 @@ export default function App() {
             for (let i = 0; i < particlesPerArm; i++) {
               const t = i / particlesPerArm;
               const angleOffset = (Math.PI * 2 / spiralArms) * arm;
-              // 使用确定性的角度计算，防止多图变换时漩涡因为随机角度不同而坍缩
               const spiralAngle = angleOffset + t * Math.PI * 3.0;
               const r = ringRadiusBase * (0.1 + t * 0.9);
-              // 使用确定性的随机 (基于 i)
               const seed = (arm * particlesPerArm + i) * 1.5;
               const deterministicRandom = (Math.sin(seed) * 0.5 + 0.5);
               const spread = (deterministicRandom - 0.5) * (15.0 * t + 2.0);
@@ -644,20 +649,19 @@ export default function App() {
               pIdx++;
             }
           }
+
           const avgR = tc > 0 ? Math.round(tr / tc * 255) : 127;
           const avgG = tc > 0 ? Math.round(tg / tc * 255) : 127;
           const avgB = tc > 0 ? Math.round(tb / tc * 255) : 127;
           const mainColor = `#${avgR.toString(16).padStart(2, '0')}${avgG.toString(16).padStart(2, '0')}${avgB.toString(16).padStart(2, '0')}`;
 
-          // 生成缩略图
           const thumbCanvas = document.createElement('canvas');
           thumbCanvas.width = 64; thumbCanvas.height = 64;
           const tCtx = thumbCanvas.getContext('2d');
           tCtx.drawImage(img, 0, 0, 64, 64);
-          const thumb = thumbCanvas.toDataURL('image/jpeg', 0.7);
+          const thumb = thumbCanvas.toDataURL('image/jpeg', 0.8);
 
-          const result = { pos, col, mainColor, name: file.name, thumb };
-          resolve(result);
+          resolve({ pos, col, mainColor, name: file.name, thumb });
         } catch (err) { reject(err); }
       };
       reader.readAsDataURL(file);
@@ -679,24 +683,26 @@ export default function App() {
     }
 
     if (!isGalleryOnly && results.length > 0) {
-      // 第一张作为初始形态
+      // 核心修复：如果是“启动创世”，必须清空旧图库，确保索引 0 指向正确的新图
       const first = results[0];
       setNebulaInfo({ name: first.name, lore: "创世基底已确立。", mainColor: first.mainColor });
-
-      // 特殊初始化 BufferGeometry
-      // (这里复用之前的初始化逻辑，但使用结果 data)
       initConstellation(first);
 
-      // 其余加入图库
-      setGallery(prev => [...prev, ...results]);
-      setCurrentIdx(0); // 重置索引到第一张
-    } else {
-      setGallery(prev => [...prev, ...results]);
+      setGallery(results);
+      galleryRef.current = results;
+      setCurrentIdx(0);
+      currentIdxRef.current = 0;
+    } else if (results.length > 0) {
+      const newItems = [...gallery, ...results];
+      setGallery(newItems);
+      galleryRef.current = newItems;
     }
 
     setIsProcessing(false);
-    if (!isGalleryOnly && results.length > 1) {
-      setTimeLeft(3); // 启动创世后立即开启首轮倒计时
+    if (results.length > 1) {
+      // 核心改进：初始给予 6 秒等待，确保 Formation (5s) 完成后再启动 3s 的流转节奏
+      // 这样第一张图有足够时间展现完整形态
+      setTimeLeft(6);
     }
   };
 
@@ -758,46 +764,54 @@ export default function App() {
   };
 
   const triggerNextMorph = (targetItem = null) => {
-    if (gallery.length === 0 || isMorphing) return;
+    const items = galleryRef.current;
+    if (items.length <= 1 || isMorphing) return;
 
-    let targetIdx;
-    let nextItem;
+    // 使用函数式更新确保获取最新的索引
+    setCurrentIdx(prevIdx => {
+      let targetIdx;
+      if (targetItem) {
+        targetIdx = items.findIndex(item => item === targetItem || item.name === targetItem.name);
+      } else {
+        // 核心修复：这里不再依赖外部作用域的 currentIdx，而是严格依赖 prevIdx
+        targetIdx = (prevIdx + 1) % items.length;
+      }
 
-    if (targetItem) {
-      targetIdx = gallery.findIndex(item => item === targetItem);
-      if (targetIdx === -1) targetIdx = gallery.findIndex(item => item.name === targetItem.name);
-      if (targetIdx === -1) return;
-      nextItem = gallery[targetIdx];
-    } else {
-      // 核心：使用函数式更新来获取最新索引，但把逻辑移出 setter 以避免副作用冲突
-      // 为了稳定，我们直接根据当前的 currentIdx 计算
-      targetIdx = (currentIdx + 1) % gallery.length;
-      nextItem = gallery[targetIdx];
-    }
+      if (targetIdx === -1 || targetIdx === prevIdx) return prevIdx;
 
-    if (!nextItem) return;
+      const nextItem = items[targetIdx];
+      console.log(`[形态流转] 下标路径确认: ${prevIdx} -> ${targetIdx} / 总数: ${items.length}`);
 
-    console.log(`[形态引擎] 物理跃迁: ${currentIdx} -> ${targetIdx} / ${gallery.length}`);
+      // 将物理形态切换剥离出状态更新钩子，保证在下一帧物理生效
+      setTimeout(() => {
+        executeMorphSequence(nextItem);
+      }, 0);
 
-    // 1. 设置索引
-    setCurrentIdx(targetIdx);
+      return targetIdx;
+    });
+  };
 
-    // 2. 执行物理迁移
+  const executeMorphSequence = (nextItem) => {
+    if (!nextItem || !sceneRef.current || !sceneRef.current.constellation) return;
+
+    // 1. 物理层对接
     promoteTargetToSource();
 
-    if (sceneRef.current && sceneRef.current.constellation) {
-      const geo = sceneRef.current.constellation.geometry;
-      geo.attributes.position2.array.set(nextItem.pos);
-      geo.attributes.position2.needsUpdate = true;
-      geo.attributes.customColor2.array.set(nextItem.col);
-      geo.attributes.customColor2.needsUpdate = true;
+    // 2. 注入新目标坐标与颜色
+    const geo = sceneRef.current.constellation.geometry;
+    geo.attributes.position2.array.set(nextItem.pos);
+    geo.attributes.position2.needsUpdate = true;
+    geo.attributes.customColor2.array.set(nextItem.col);
+    geo.attributes.customColor2.needsUpdate = true;
 
-      setNebulaInfo2({ name: nextItem.name, lore: "形态跃迁中，粒子坐标正在重新定向...", mainColor: nextItem.mainColor });
-      setNebulaInfo({ name: nextItem.name, lore: "能量在图库间共鸣，粒子流向新的形态。", mainColor: nextItem.mainColor });
+    // 3. UI 状态同步
+    setNebulaInfo2({ name: nextItem.name, lore: "形态跃进中，粒子正在重组...", mainColor: nextItem.mainColor });
+    setNebulaInfo({ name: nextItem.name, lore: "能量相位同步，开启新一轮演化。", mainColor: nextItem.mainColor });
 
-      setTimeLeft(3);
-      startMorphEvolution();
-    }
+    // 4. 重置倒计时并启动动画
+    setTimeLeft(3);
+    setMorph(0);
+    startMorphEvolution();
   };
 
   const startMorphEvolution = () => {
@@ -820,7 +834,7 @@ export default function App() {
     requestAnimationFrame(step);
   };
 
-  // 优化的自动流转逻辑
+  // 优化的自动流转逻辑：独立计时，严格触发
   useEffect(() => {
     if (!isAutoCycle || isMorphing || gallery.length <= 1) return;
 
@@ -837,12 +851,13 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isAutoCycle, isMorphing, gallery.length]);
 
-  // 独立监听 timeLeft，当到 0 时触发跃迁
+  // 独立监听：当计时到零时，执行且仅执行一次跃迁触发
   useEffect(() => {
     if (isAutoCycle && !isMorphing && timeLeft === 0 && gallery.length > 1) {
+      console.log("[流转中心] 倒计时结束，触发下一形态...");
       triggerNextMorph();
     }
-  }, [timeLeft, isAutoCycle, isMorphing]);
+  }, [timeLeft, isAutoCycle, isMorphing, gallery.length]);
 
   return (
     <div className="relative w-full h-screen bg-[#000001] overflow-hidden text-white font-sans">
