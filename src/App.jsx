@@ -37,6 +37,8 @@ const stellarVertexShader = `
   varying float vAlpha;
   varying float vStarType;
   varying float vTwinkle;
+  varying float vIsRing;
+  varying float vFormation;
 
   // GLSL 插值
   float easeInOutCubic(float t) {
@@ -192,6 +194,8 @@ const stellarVertexShader = `
     
     vColor = outColor;
     vAlpha = alphaOut;
+    vIsRing = isRing;
+    vFormation = t;
   }
 `;
 
@@ -200,7 +204,10 @@ const stellarFragmentShader = `
   varying float vAlpha;
   varying float vStarType;
   varying float vTwinkle;
+  varying float vIsRing;
+  varying float vFormation;
   
+  uniform float uAudioLow;
   uniform float uAudioHigh;
   uniform float uSaturation;
   uniform float uBrightness;
@@ -232,6 +239,14 @@ const stellarFragmentShader = `
     vec3 contrastedColor = (saturatedColor - 0.5) * uContrast + 0.5;
     
     vec3 baseColor = contrastedColor * (uBrightness + vTwinkle * uTwinkleStrength);
+    
+    // 律动增强：漩涡亮度随节拍爆发 (vIsRing > 0.5 且 vFormation > 0.8)
+    float pulse = 1.0;
+    if (vIsRing > 0.5 && vFormation > 0.8) {
+        pulse = 1.0 + uAudioLow * 1.5;
+    }
+    baseColor *= pulse;
+
     vec3 coreGlow = contrastedColor * strength * 1.2; 
     vec3 audioFlash = contrastedColor * uAudioHigh * 0.2;
 
@@ -260,10 +275,12 @@ export default function App() {
   const [isAutoCycle, setIsAutoCycle] = useState(true);   // 默认开启自动流转
   const [timeLeft, setTimeLeft] = useState(0);            // 倒计时
   const [isMorphing, setIsMorphing] = useState(false);    // 是否正在形变中
+  const [showLyrics, setShowLyrics] = useState(true);     // 是否显示歌词
   const [gallery, setGallery] = useState([]);             // 存储已处理的图片数据 {pos, col, name, mainColor, thumb}
   const [currentIdx, setCurrentIdx] = useState(0);        // 当前显示的索引
   const [envRotation, setEnvRotation] = useState(0.1);    // 氛围旋转速度
-  const [showControls, setShowControls] = useState(true); // 显示/隐藏控制面板
+  const [showControls, setShowControls] = useState(false); // 默认隐藏控制面板
+  const [showMusicPanel, setShowMusicPanel] = useState(false); // 默认隐藏音乐面板
   const [mouseX, setMouseX] = useState(null);             // 鼠标在底栏的 X 坐标
   const [stayDuration, setStayDuration] = useState(3);    // 停留时间 (秒)
   const [morphDuration, setMorphDuration] = useState(6);  // 变换时长 (秒)
@@ -1406,173 +1423,190 @@ export default function App() {
       <div ref={containerRef} className="absolute inset-0 z-0" />
       <div className="absolute inset-0 pointer-events-none z-10 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.6)_100%)]" />
 
-      {/* 左上角控制面板 */}
-      {isStarted && showControls && nebulaInfo && (
-        <div className="absolute top-6 left-6 w-80 p-6 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-3xl pointer-events-auto z-30">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-sm font-light tracking-widest uppercase text-blue-200">可视化控制</h3>
-            <button onClick={() => setShowControls(false)} className="text-white/50 hover:text-white text-xs">×</button>
+      {/* 沉浸式侧边菜单：左侧控制 */}
+      {isStarted && nebulaInfo && (
+        <>
+          <div className="side-trigger-marker left-trigger">
+            <span className="trigger-icon text-2xl">⚙️</span>
           </div>
-
-          <div className="space-y-4">
-            <div className="flex justify-between items-center py-2 px-4 bg-blue-500/10 rounded-xl border border-blue-500/20">
-              <span className="text-[10px] text-blue-300 uppercase tracking-widest font-medium">下一次跃迁</span>
-              <span className="text-xs text-blue-400 font-mono font-bold animate-pulse">{timeLeft}s</span>
-            </div>
-
-            <div className="h-[1px] w-full bg-white/5 my-2" />
-
-            <div className="h-[1px] w-full bg-white/5 my-2" />
-
-            <div>
-              <label className="text-[10px] text-blue-300 tracking-wider uppercase block mb-2">星云旋转: {envRotation.toFixed(2)}</label>
-              <input type="range" min="0" max="1" step="0.01" value={envRotation} onChange={(e) => setEnvRotation(parseFloat(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
-            </div>
-
-            <div>
-              <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">饱和度: {saturation.toFixed(2)}</label>
-              <input type="range" min="-1" max="3" step="0.01" value={saturation} onChange={(e) => setSaturation(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
-            </div>
-
-            <div>
-              <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">亮度: {brightness.toFixed(2)}</label>
-              <input type="range" min="-1" max="4" step="0.1" value={brightness} onChange={(e) => setBrightness(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
-            </div>
-
-            <div>
-              <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">对比度: {contrast.toFixed(2)}</label>
-              <input type="range" min="-1" max="4" step="0.1" value={contrast} onChange={(e) => setContrast(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
-            </div>
-
-            <div>
-              <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">闪烁强度: {twinkleStrength.toFixed(2)}</label>
-              <input type="range" min="-1" max="3" step="0.05" value={twinkleStrength} onChange={(e) => setTwinkleStrength(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
-            </div>
-
-            <div className="pt-2 border-t border-white/5">
-              <label className="text-[10px] text-blue-300/80 tracking-wider uppercase block mb-2">停留时长: {stayDuration}s</label>
-              <input type="range" min="1" max="10" step="1" value={stayDuration} onChange={(e) => setStayDuration(parseInt(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
-            </div>
-
-            <div>
-              <label className="text-[10px] text-blue-300/80 tracking-wider uppercase block mb-2">变换速度: {morphDuration}s</label>
-              <input type="range" min="1" max="15" step="0.5" value={morphDuration} onChange={(e) => setMorphDuration(parseFloat(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
-            </div>
-
-            <div className="h-[1px] w-full bg-white/5 my-2" />
-
-            {/* 歌词设置 (折叠面板) */}
-            <details className="mt-4 group open:bg-white/5 rounded-xl transition-all border border-transparent open:border-white/10 overflow-hidden">
-              <summary className="flex items-center justify-between p-3 cursor-pointer hover:bg-white/5 transition-all">
-                <span className="text-[10px] text-white/40 uppercase tracking-widest font-bold group-open:text-blue-400">歌词设置 Lyric Display</span>
-                <span className="text-white/20 text-[8px] transform group-open:rotate-180 transition-transform">▼</span>
-              </summary>
-              <div className="p-3 pt-0 space-y-4">
-                <div className="space-y-2">
-                  <div className="flex justify-between items-center px-1">
-                    <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">字体缩放 Scale</label>
-                    <span className="text-[9px] font-mono text-blue-400/80">{lyricScale.toFixed(2)}x</span>
-                  </div>
-                  <input
-                    type="range" min="0.5" max="2.5" step="0.05"
-                    value={lyricScale}
-                    onChange={(e) => setLyricScale(parseFloat(e.target.value))}
-                    className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                  />
-                </div>
+          <div className="side-menu-wrapper left-menu-wrapper">
+            <div className="w-80 p-6 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-3xl pointer-events-auto h-full overflow-y-auto no-scrollbar">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-sm font-light tracking-widest uppercase text-blue-200">可视化控制</h3>
               </div>
-            </details>
 
-            <div className="h-[1px] w-full bg-white/5 my-2" />
-
-            <button
-              onClick={() => {
-                setSaturation(0.5); setBrightness(1.1); setContrast(1.2); setTwinkleStrength(0.3);
-                setStayDuration(3); setMorphDuration(6);
-                setMorph(0); setIsAutoCycle(false);
-              }}
-              className="w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full transition-all"
-            >
-              重置色彩与节奏
-            </button>
-
-            {/* 集成式堆叠图库 */}
-            {gallery.length > 0 && (
-              <div className="pt-4 border-t border-white/5 mt-2">
-                <div className="flex justify-between items-center mb-2 px-1">
-                  <span className="text-[9px] text-white/30 uppercase tracking-[0.2em]">星辰预览 ({gallery.length})</span>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center py-2 px-4 bg-blue-500/10 rounded-xl border border-blue-500/20">
+                  <span className="text-[10px] text-blue-300 uppercase tracking-widest font-medium">下一次跃迁</span>
+                  <span className="text-xs text-blue-400 font-mono font-bold animate-pulse">{timeLeft}s</span>
                 </div>
-                <div
-                  ref={scrollContainerRef}
-                  className="menu-gallery-stack no-scrollbar"
-                  onMouseMove={(e) => {
-                    if (!scrollContainerRef.current) return;
-                    const rect = scrollContainerRef.current.getBoundingClientRect();
-                    const x = e.clientX - rect.left;
-                    const width = rect.width;
-                    const edgeSize = width * 0.2;
-                    if (x < edgeSize) {
-                      if (!scrollScrollInterval.current) {
-                        scrollScrollInterval.current = setInterval(() => {
-                          if (scrollContainerRef.current) scrollContainerRef.current.scrollLeft -= 5;
-                        }, 16);
-                      }
-                    } else if (x > width - edgeSize) {
-                      if (!scrollScrollInterval.current) {
-                        scrollScrollInterval.current = setInterval(() => {
-                          if (scrollContainerRef.current) scrollContainerRef.current.scrollLeft += 5;
-                        }, 16);
-                      }
-                    } else {
-                      if (scrollScrollInterval.current) {
-                        clearInterval(scrollScrollInterval.current);
-                        scrollScrollInterval.current = null;
-                      }
-                    }
-                  }}
-                  onMouseLeave={() => {
-                    if (scrollScrollInterval.current) {
-                      clearInterval(scrollScrollInterval.current);
-                      scrollScrollInterval.current = null;
-                    }
-                  }}
-                >
-                  {gallery.map((item, idx) => (
-                    <div
-                      key={idx}
-                      onClick={() => triggerNextMorph(item)}
-                      className={`menu-gallery-item ${currentIdx === idx ? 'active' : ''}`}
-                      title={item.name}
-                    >
-                      <img src={item.thumb} alt={item.name} />
-                      <div className="mini-dot" />
+
+                <div className="h-[1px] w-full bg-white/5 my-2" />
+
+                <div className="h-[1px] w-full bg-white/5 my-2" />
+
+                <div>
+                  <label className="text-[10px] text-blue-300 tracking-wider uppercase block mb-2">星云旋转: {envRotation.toFixed(2)}</label>
+                  <input type="range" min="0" max="1" step="0.01" value={envRotation} onChange={(e) => setEnvRotation(parseFloat(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">饱和度: {saturation.toFixed(2)}</label>
+                  <input type="range" min="-1" max="3" step="0.01" value={saturation} onChange={(e) => setSaturation(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">亮度: {brightness.toFixed(2)}</label>
+                  <input type="range" min="-1" max="4" step="0.1" value={brightness} onChange={(e) => setBrightness(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">对比度: {contrast.toFixed(2)}</label>
+                  <input type="range" min="-1" max="4" step="0.1" value={contrast} onChange={(e) => setContrast(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">闪烁强度: {twinkleStrength.toFixed(2)}</label>
+                  <input type="range" min="-1" max="3" step="0.05" value={twinkleStrength} onChange={(e) => setTwinkleStrength(parseFloat(e.target.value))} className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer" />
+                </div>
+
+                <div className="pt-2 border-t border-white/5">
+                  <label className="text-[10px] text-blue-300/80 tracking-wider uppercase block mb-2">停留时长: {stayDuration}s</label>
+                  <input type="range" min="1" max="10" step="1" value={stayDuration} onChange={(e) => setStayDuration(parseInt(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-blue-300/80 tracking-wider uppercase block mb-2">变换速度: {morphDuration}s</label>
+                  <input type="range" min="1" max="15" step="0.5" value={morphDuration} onChange={(e) => setMorphDuration(parseFloat(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
+                </div>
+
+                <div className="h-[1px] w-full bg-white/5 my-2" />
+
+                {/* 歌词设置 (折叠面板) */}
+                <details className="mt-4 group open:bg-white/5 rounded-xl transition-all border border-transparent open:border-white/10 overflow-hidden">
+                  <summary className="flex items-center justify-between p-3 cursor-pointer hover:bg-white/5 transition-all">
+                    <span className="text-[10px] text-white/40 uppercase tracking-widest font-bold group-open:text-blue-400">歌词设置 Lyric Display</span>
+                    <span className="text-white/20 text-[8px] transform group-open:rotate-180 transition-transform">▼</span>
+                  </summary>
+                  <div className="p-3 pt-0 space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">字体缩放 Scale</label>
+                        <span className="text-[9px] font-mono text-blue-400/80">{lyricScale.toFixed(2)}x</span>
+                      </div>
+                      <input
+                        type="range" min="0.5" max="2.5" step="0.05"
+                        value={lyricScale}
+                        onChange={(e) => setLyricScale(parseFloat(e.target.value))}
+                        className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      />
                     </div>
-                  ))}
+                  </div>
+                </details>
+
+                <div className="h-[1px] w-full bg-white/5 my-2" />
+
+                <div className="h-[1px] w-full bg-white/5 my-2" />
+
+                <div className="flex items-center justify-between p-3 bg-white/5 rounded-xl border border-white/10 mt-2">
+                  <span className="text-[10px] text-white/40 uppercase tracking-widest font-bold">显示歌词 Display Lyrics</span>
+                  <button
+                    onClick={() => setShowLyrics(!showLyrics)}
+                    className={`w-10 h-5 rounded-full transition-all relative ${showLyrics ? 'bg-blue-600' : 'bg-white/10'}`}
+                  >
+                    <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${showLyrics ? 'left-6' : 'left-1'}`} />
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setSaturation(0.5); setBrightness(1.1); setContrast(1.2); setTwinkleStrength(0.3);
+                    setStayDuration(3); setMorphDuration(6);
+                    setMorph(0); setIsAutoCycle(false);
+                    setShowLyrics(true);
+                  }}
+                  className="w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full transition-all"
+                >
+                  重置色彩与节奏
+                </button>
+
+                {/* 集成式堆叠图库 */}
+                {gallery.length > 0 && (
+                  <div className="pt-4 border-t border-white/5 mt-2">
+                    <div className="flex justify-between items-center mb-2 px-1">
+                      <span className="text-[9px] text-white/30 uppercase tracking-[0.2em]">星辰预览 ({gallery.length})</span>
+                    </div>
+                    <div
+                      ref={scrollContainerRef}
+                      className="menu-gallery-stack no-scrollbar"
+                      onMouseMove={(e) => {
+                        if (!scrollContainerRef.current) return;
+                        const rect = scrollContainerRef.current.getBoundingClientRect();
+                        const x = e.clientX - rect.left;
+                        const width = rect.width;
+                        const edgeSize = width * 0.2;
+                        if (x < edgeSize) {
+                          if (!scrollScrollInterval.current) {
+                            scrollScrollInterval.current = setInterval(() => {
+                              if (scrollContainerRef.current) scrollContainerRef.current.scrollLeft -= 5;
+                            }, 16);
+                          }
+                        } else if (x > width - edgeSize) {
+                          if (!scrollScrollInterval.current) {
+                            scrollScrollInterval.current = setInterval(() => {
+                              if (scrollContainerRef.current) scrollContainerRef.current.scrollLeft += 5;
+                            }, 16);
+                          }
+                        } else {
+                          if (scrollScrollInterval.current) {
+                            clearInterval(scrollScrollInterval.current);
+                            scrollScrollInterval.current = null;
+                          }
+                        }
+                      }}
+                      onMouseLeave={() => {
+                        if (scrollScrollInterval.current) {
+                          clearInterval(scrollScrollInterval.current);
+                          scrollScrollInterval.current = null;
+                        }
+                      }}
+                    >
+                      {gallery.map((item, idx) => (
+                        <div
+                          key={idx}
+                          onClick={() => triggerNextMorph(item)}
+                          className={`menu-gallery-item ${currentIdx === idx ? 'active' : ''}`}
+                          title={item.name}
+                        >
+                          <img src={item.thumb} alt={item.name} />
+                          <div className="mini-dot" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-2 border-t border-white/5 space-y-2">
+                  <div className="flex gap-2">
+                    <button className="flex-1 py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full transition-all" onClick={() => { setNebulaInfo(null); setGallery([]); setIsAutoCycle(true); setMorph(0); setTimeLeft(0); setCurrentIdx(0); setIsStarted(false); }}>退出创世</button>
+                    <label className="flex-1 py-2 text-[9px] tracking-wider uppercase bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-300 rounded-full cursor-pointer text-center flex items-center justify-center">
+                      <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
+                      + 扩充
+                    </label>
+                  </div>
+                  {/* Removed music upload button */}
+                  {audioData && (
+                    <button className={isPlaying ? 'w-full py-2 text-[9px] tracking-wider uppercase bg-blue-500/20 text-blue-200 border border-blue-500/20 rounded-full' : 'w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full'} onClick={togglePlay}>{isPlaying ? "⏸ 暂停" : "▶ 播放"}</button>
+                  )}
+                  <button className={isRecording ? 'w-full py-2 text-[9px] tracking-wider uppercase bg-red-500/20 text-red-200 border border-red-500/20 rounded-full animate-pulse' : 'w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full'} onClick={toggleRecording}>{isRecording ? "🔴 停止录制" : "⭕ 开启录制"}</button>
                 </div>
               </div>
-            )}
-
-            <div className="pt-2 border-t border-white/5 space-y-2">
-              <div className="flex gap-2">
-                <button className="flex-1 py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full transition-all" onClick={() => { setNebulaInfo(null); setGallery([]); setIsAutoCycle(true); setMorph(0); setTimeLeft(0); setCurrentIdx(0); setIsStarted(false); }}>退出创世</button>
-                <label className="flex-1 py-2 text-[9px] tracking-wider uppercase bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-300 rounded-full cursor-pointer text-center flex items-center justify-center">
-                  <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
-                  + 扩充
-                </label>
-              </div>
-              {/* Removed music upload button */}
-              {audioData && (
-                <button className={isPlaying ? 'w-full py-2 text-[9px] tracking-wider uppercase bg-blue-500/20 text-blue-200 border border-blue-500/20 rounded-full' : 'w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full'} onClick={togglePlay}>{isPlaying ? "⏸ 暂停" : "▶ 播放"}</button>
-              )}
-              <button className={isRecording ? 'w-full py-2 text-[9px] tracking-wider uppercase bg-red-500/20 text-red-200 border border-red-500/20 rounded-full animate-pulse' : 'w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full'} onClick={toggleRecording}>{isRecording ? "🔴 停止录制" : "⭕ 开启录制"}</button>
             </div>
           </div>
-        </div>
+        </>
       )}
 
-      {!showControls && nebulaInfo && (
-        <button onClick={() => setShowControls(true)} className="absolute top-6 left-6 w-10 h-10 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-full flex items-center justify-center pointer-events-auto z-30 hover:bg-white/20 transition-all">⚙️</button>
-      )}
+      {/* 移除旧的浮动齿轮/音符按钮，已由侧边感应取代 */}
 
       <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-between p-6">
         <div className="flex-1 flex flex-col items-center justify-center text-center">
@@ -1606,268 +1640,275 @@ export default function App() {
           )}
         </div>
       </div>
-      {/* 右侧音乐面板 (网易云音乐指令中心) */}
+      {/* 沉浸式侧边菜单：右侧音乐 */}
       {nebulaInfo && (
-        <div className="absolute top-6 right-6 w-80 h-[calc(100vh-48px)] flex flex-col pointer-events-none z-30">
-          <div className="flex-1 p-6 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-3xl pointer-events-auto flex flex-col overflow-hidden">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-sm font-light tracking-widest uppercase text-blue-200">音乐指令中心</h3>
-              <div className="flex items-center gap-2">
-                <div className={`w-1.5 h-1.5 rounded-full ${musicUser ? 'bg-green-500' : 'bg-red-500'} animate-pulse`} />
-                <span className="text-[10px] text-white/30 tracking-tight">{musicUser ? '已连接' : '未登录'}</span>
-              </div>
-            </div>
-
-            {!musicUser ? (
-              <div className="flex-1 flex flex-col items-center justify-center space-y-6">
-                {!loginQR ? (
-                  <button
-                    onClick={getLoginQR}
-                    disabled={isMusicLoading}
-                    className="px-8 py-3 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 rounded-full text-[10px] tracking-[0.2em] uppercase transition-all disabled:opacity-50"
-                  >
-                    {isMusicLoading ? '获取中...' : '扫码登录网易云'}
-                  </button>
-                ) : (
-                  <div className="flex flex-col items-center space-y-4">
-                    <div className="p-3 bg-white rounded-2xl overflow-hidden w-40 h-40">
-                      <img src={loginQR} alt="QR Code" className="w-full h-full object-contain" />
-                    </div>
-                    <p className="text-[10px] text-white/40 tracking-wider">请使用网易云音乐 APP 扫码</p>
-                  </div>
-                )}
-                <p className="text-[9px] text-white/20 text-center leading-relaxed">
-                  不再需要抓取 Cookie<br />
-                  扫码即可同步您的歌单
-                </p>
-              </div>
-            ) : (
-              <div className="flex-1 flex flex-col min-h-0">
-                {/* 用户信息 */}
-                <div className="flex items-center gap-3 mb-6 p-3 bg-white/5 rounded-2xl border border-white/5 group relative">
-                  <img src={musicUser.avatar} className="w-10 h-10 rounded-full border border-blue-500/30" alt="avatar" />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium text-blue-100 truncate">{musicUser.nickname}</p>
-                    <p className="text-[9px] text-white/30 uppercase tracking-tighter">探索者</p>
-                  </div>
-                  <button
-                    onClick={handleLogout}
-                    title="退出登录"
-                    className="opacity-0 group-hover:opacity-100 p-2 text-white/40 hover:text-red-400 transition-all text-xs"
-                  >
-                    Logout
-                  </button>
+        <>
+          <div className="side-trigger-marker right-trigger">
+            <span className="trigger-icon text-2xl">🎵</span>
+          </div>
+          <div className="side-menu-wrapper right-menu-wrapper">
+            <div className="w-80 h-full p-6 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-3xl pointer-events-auto flex flex-col overflow-hidden">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-sm font-light tracking-widest uppercase text-blue-200">音乐指令中心</h3>
+                <div className="flex items-center gap-2">
+                  <div className={`w-1.5 h-1.5 rounded-full ${musicUser ? 'bg-green-500' : 'bg-red-500'} animate-pulse`} />
+                  <span className="text-[10px] text-white/30 tracking-tight">{musicUser ? '已连接' : '未登录'}</span>
                 </div>
+              </div>
 
-                {/* 功能导航 tabs */}
-                <div className="flex bg-white/5 rounded-xl p-1 mb-4">
-                  {[
-                    { id: 'playlist', icon: '📂', label: '歌单' },
-                    { id: 'recommend', icon: '📅', label: '日推' },
-                    { id: 'fm', icon: '📻', label: 'FM' },
-                    { id: 'history', icon: '🕒', label: '排行' },
-                  ].map(tab => (
+              {!musicUser ? (
+                <div className="flex-1 flex flex-col items-center justify-center space-y-6">
+                  {!loginQR ? (
                     <button
-                      key={tab.id}
-                      onClick={() => {
-                        setMusicMode(tab.id);
-                        setShowSongList(false);
-                        if (tab.id === 'recommend') fetchDailyRecommend();
-                        if (tab.id === 'fm') startFM();
-                        if (tab.id === 'history') fetchListeningHistory();
-                        if (tab.id === 'playlist') { /* 已经加载过了 */ }
-                      }}
-                      className={`flex-1 py-1.5 rounded-lg text-[10px] transition-all flex items-center justify-center gap-1 ${musicMode === tab.id ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white/80 hover:bg-white/5'}`}
+                      onClick={getLoginQR}
+                      disabled={isMusicLoading}
+                      className="px-8 py-3 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 rounded-full text-[10px] tracking-[0.2em] uppercase transition-all disabled:opacity-50"
                     >
-                      <span>{tab.icon}</span>
-                      <span>{tab.label}</span>
+                      {isMusicLoading ? '获取中...' : '扫码登录网易云'}
                     </button>
-                  ))}
+                  ) : (
+                    <div className="flex flex-col items-center space-y-4">
+                      <div className="p-3 bg-white rounded-2xl overflow-hidden w-40 h-40">
+                        <img src={loginQR} alt="QR Code" className="w-full h-full object-contain" />
+                      </div>
+                      <p className="text-[10px] text-white/40 tracking-wider">请使用网易云音乐 APP 扫码</p>
+                    </div>
+                  )}
+                  <p className="text-[9px] text-white/20 text-center leading-relaxed">
+                    不再需要抓取 Cookie<br />
+                    扫码即可同步您的歌单
+                  </p>
                 </div>
+              ) : (
+                <div className="flex-1 flex flex-col min-h-0">
+                  {/* 用户信息 */}
+                  <div className="flex items-center gap-3 mb-6 p-3 bg-white/5 rounded-2xl border border-white/5 group relative">
+                    <img src={musicUser.avatar} className="w-10 h-10 rounded-full border border-blue-500/30" alt="avatar" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-blue-100 truncate">{musicUser.nickname}</p>
+                      <p className="text-[9px] text-white/30 uppercase tracking-tighter">探索者</p>
+                    </div>
+                    <button
+                      onClick={handleLogout}
+                      title="退出登录"
+                      className="opacity-0 group-hover:opacity-100 p-2 text-white/40 hover:text-red-400 transition-all text-xs"
+                    >
+                      Logout
+                    </button>
+                  </div>
 
-                {/* 歌单/歌曲/功能 切换容器 */}
-                <div className="flex-1 overflow-y-auto no-scrollbar space-y-2 mb-4">
-                  {/* --- 模式：歌单 --- */}
-                  {musicMode === 'playlist' && (
-                    !showSongList ? (
-                      <>
-                        <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">我的网易云歌单</p>
-                        {playlists.length === 0 ? (
-                          <div className="h-32 flex items-center justify-center border border-white/5 border-dashed rounded-2xl">
-                            <span className="text-[10px] text-white/10 italic">暂无同步数据</span>
+                  {/* 功能导航 tabs */}
+                  <div className="flex bg-white/5 rounded-xl p-1 mb-4">
+                    {[
+                      { id: 'playlist', icon: '📂', label: '歌单' },
+                      { id: 'recommend', icon: '📅', label: '日推' },
+                      { id: 'fm', icon: '📻', label: 'FM' },
+                      { id: 'history', icon: '🕒', label: '排行' },
+                    ].map(tab => (
+                      <button
+                        key={tab.id}
+                        onClick={() => {
+                          setMusicMode(tab.id);
+                          setShowSongList(false);
+                          if (tab.id === 'recommend') fetchDailyRecommend();
+                          if (tab.id === 'fm') startFM();
+                          if (tab.id === 'history') fetchListeningHistory();
+                          if (tab.id === 'playlist') { /* 已经加载过了 */ }
+                        }}
+                        className={`flex-1 py-1.5 rounded-lg text-[10px] transition-all flex items-center justify-center gap-1 ${musicMode === tab.id ? 'bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'text-white/40 hover:text-white/80 hover:bg-white/5'}`}
+                      >
+                        <span>{tab.icon}</span>
+                        <span>{tab.label}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* 歌单/歌曲/功能 切换容器 */}
+                  <div className="flex-1 overflow-y-auto no-scrollbar space-y-2 mb-4">
+                    {/* --- 模式：歌单 --- */}
+                    {musicMode === 'playlist' && (
+                      !showSongList ? (
+                        <>
+                          <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">我的网易云歌单</p>
+                          {playlists.length === 0 ? (
+                            <div className="h-32 flex items-center justify-center border border-white/5 border-dashed rounded-2xl">
+                              <span className="text-[10px] text-white/10 italic">暂无同步数据</span>
+                            </div>
+                          ) : (
+                            playlists.map((pl, idx) => (
+                              <button
+                                key={idx}
+                                onClick={() => fetchPlaylistSongs(pl.id)}
+                                className="w-full p-3 flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-left group"
+                              >
+                                <div className="w-8 h-8 bg-blue-500/20 rounded-lg flex items-center justify-center overflow-hidden">
+                                  {pl.img ? <img src={pl.img} className="w-full h-full object-cover" /> : <span className="text-xs text-blue-400">♫</span>}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[11px] text-white/60 group-hover:text-blue-200 truncate">{pl.name}</p>
+                                  <p className="text-[9px] text-white/20">{pl.count} 首歌曲</p>
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between mb-2 px-1">
+                            <p className="text-[9px] text-white/20 uppercase tracking-[0.2em]">歌曲列表 ({songList.length})</p>
+                            <button onClick={() => setShowSongList(false)} className="text-[9px] text-blue-400/60 hover:text-blue-400 tracking-wider">返回歌单</button>
                           </div>
-                        ) : (
-                          playlists.map((pl, idx) => (
+                          {songList.map((song, idx) => (
                             <button
                               key={idx}
-                              onClick={() => fetchPlaylistSongs(pl.id)}
-                              className="w-full p-3 flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-left group"
+                              onClick={() => playOnlineSong(song)}
+                              className={`w-full p-2 flex items-center gap-3 rounded-lg transition-all text-left group ${currentTrack?.id === song.id ? 'bg-blue-500/10 border border-blue-500/20' : 'hover:bg-white/5'}`}
                             >
-                              <div className="w-8 h-8 bg-blue-500/20 rounded-lg flex items-center justify-center overflow-hidden">
-                                {pl.img ? <img src={pl.img} className="w-full h-full object-cover" /> : <span className="text-xs text-blue-400">♫</span>}
+                              <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 text-[10px] text-white/20 group-hover:text-blue-400">
+                                {currentTrack?.id === song.id ? '▶' : idx + 1}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="text-[11px] text-white/60 group-hover:text-blue-200 truncate">{pl.name}</p>
-                                <p className="text-[9px] text-white/20">{pl.count} 首歌曲</p>
+                                <p className={`text-[11px] ${currentTrack?.id === song.id ? 'text-blue-200' : 'text-white/60'} truncate`}>{song.name}</p>
+                                <p className="text-[9px] text-white/20 truncate">{song.artist}</p>
                               </div>
                             </button>
-                          ))
-                        )}
-                      </>
-                    ) : (
+                          ))}
+                        </>
+                      )
+                    )}
+
+                    {/* --- 模式：每日推荐 --- */}
+                    {musicMode === 'recommend' && (
                       <>
-                        <div className="flex items-center justify-between mb-2 px-1">
-                          <p className="text-[9px] text-white/20 uppercase tracking-[0.2em]">歌曲列表 ({songList.length})</p>
-                          <button onClick={() => setShowSongList(false)} className="text-[9px] text-blue-400/60 hover:text-blue-400 tracking-wider">返回歌单</button>
-                        </div>
-                        {songList.map((song, idx) => (
+                        <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">📅 每日推荐 ({recommendSongs.length})</p>
+                        {recommendSongs.map((song, idx) => (
                           <button
                             key={idx}
                             onClick={() => playOnlineSong(song)}
                             className={`w-full p-2 flex items-center gap-3 rounded-lg transition-all text-left group ${currentTrack?.id === song.id ? 'bg-blue-500/10 border border-blue-500/20' : 'hover:bg-white/5'}`}
                           >
-                            <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 text-[10px] text-white/20 group-hover:text-blue-400">
-                              {currentTrack?.id === song.id ? '▶' : idx + 1}
+                            <div className="w-8 h-8 rounded overflow-hidden bg-white/5 relative">
+                              <img src={song.albumArt} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" />
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                                <span className="text-[10px] text-white">{currentTrack?.id === song.id ? '▶' : ''}</span>
+                              </div>
                             </div>
                             <div className="flex-1 min-w-0">
                               <p className={`text-[11px] ${currentTrack?.id === song.id ? 'text-blue-200' : 'text-white/60'} truncate`}>{song.name}</p>
-                              <p className="text-[9px] text-white/20 truncate">{song.artist}</p>
+                              <p className="text-[9px] text-white/20 truncate">{song.artist} - {song.album}</p>
                             </div>
                           </button>
                         ))}
                       </>
-                    )
-                  )}
+                    )}
 
-                  {/* --- 模式：每日推荐 --- */}
-                  {musicMode === 'recommend' && (
-                    <>
-                      <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">📅 每日推荐 ({recommendSongs.length})</p>
-                      {recommendSongs.map((song, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => playOnlineSong(song)}
-                          className={`w-full p-2 flex items-center gap-3 rounded-lg transition-all text-left group ${currentTrack?.id === song.id ? 'bg-blue-500/10 border border-blue-500/20' : 'hover:bg-white/5'}`}
-                        >
-                          <div className="w-8 h-8 rounded overflow-hidden bg-white/5 relative">
-                            <img src={song.albumArt} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" />
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-                              <span className="text-[10px] text-white">{currentTrack?.id === song.id ? '▶' : ''}</span>
+                    {/* --- 模式：私人 FM --- */}
+                    {musicMode === 'fm' && (
+                      <div className="h-full flex flex-col items-center justify-center p-4">
+                        <div className={`w-40 h-40 rounded-full border-4 border-white/5 mb-6 relative overflow-hidden ${isPlaying ? 'animate-[spin_20s_linear_infinite]' : ''}`}>
+                          <img src={currentTrack?.albumArt || "https://y.gtimg.cn/mediastyle/global/img/person_300.png"} className="w-full h-full object-cover" />
+                          <div className="absolute inset-0 bg-black/20" />
+                        </div>
+                        <h3 className="text-sm font-medium text-white mb-2 text-center">{currentTrack?.name || "这里是私人 FM"}</h3>
+                        <p className="text-[10px] text-white/40 mb-8">{currentTrack?.artist || "听懂你的心声"}</p>
+
+                        <div className="flex gap-4">
+                          <button onClick={() => { /* 喜欢逻辑暂留坑 */ alert('喜欢功能开发中') }} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-500 border border-white/10 flex items-center justify-center transition-all">
+                            ❤
+                          </button>
+                          <button onClick={playNextFM} className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 text-white border border-white/10 flex items-center justify-center transition-all">
+                            ➡
+                          </button>
+                        </div>
+                        <p className="text-[9px] text-white/10 mt-6">算法根据您的听歌历史实时推荐</p>
+                      </div>
+                    )}
+
+                    {/* --- 模式：听歌排行 --- */}
+                    {musicMode === 'history' && (
+                      <>
+                        <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">🏆 本周听歌排行</p>
+                        {historySongs.map((song, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => playOnlineSong(song)}
+                            className={`w-full p-2 flex items-center gap-3 rounded-lg transition-all text-left group ${currentTrack?.id === song.id ? 'bg-blue-500/10 border border-blue-500/20' : 'hover:bg-white/5'}`}
+                          >
+                            <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 font-mono font-bold text-xs italic text-white/10 group-hover:text-amber-500">
+                              {idx + 1}
                             </div>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-[11px] ${currentTrack?.id === song.id ? 'text-blue-200' : 'text-white/60'} truncate`}>{song.name}</p>
-                            <p className="text-[9px] text-white/20 truncate">{song.artist} - {song.album}</p>
-                          </div>
-                        </button>
-                      ))}
-                    </>
-                  )}
-
-                  {/* --- 模式：私人 FM --- */}
-                  {musicMode === 'fm' && (
-                    <div className="h-full flex flex-col items-center justify-center p-4">
-                      <div className={`w-40 h-40 rounded-full border-4 border-white/5 mb-6 relative overflow-hidden ${isPlaying ? 'animate-[spin_20s_linear_infinite]' : ''}`}>
-                        <img src={currentTrack?.albumArt || "https://y.gtimg.cn/mediastyle/global/img/person_300.png"} className="w-full h-full object-cover" />
-                        <div className="absolute inset-0 bg-black/20" />
-                      </div>
-                      <h3 className="text-sm font-medium text-white mb-2 text-center">{currentTrack?.name || "这里是私人 FM"}</h3>
-                      <p className="text-[10px] text-white/40 mb-8">{currentTrack?.artist || "听懂你的心声"}</p>
-
-                      <div className="flex gap-4">
-                        <button onClick={() => { /* 喜欢逻辑暂留坑 */ alert('喜欢功能开发中') }} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-500 border border-white/10 flex items-center justify-center transition-all">
-                          ❤
-                        </button>
-                        <button onClick={playNextFM} className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 text-white border border-white/10 flex items-center justify-center transition-all">
-                          ➡
-                        </button>
-                      </div>
-                      <p className="text-[9px] text-white/10 mt-6">算法根据您的听歌历史实时推荐</p>
-                    </div>
-                  )}
-
-                  {/* --- 模式：听歌排行 --- */}
-                  {musicMode === 'history' && (
-                    <>
-                      <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">🏆 本周听歌排行</p>
-                      {historySongs.map((song, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => playOnlineSong(song)}
-                          className={`w-full p-2 flex items-center gap-3 rounded-lg transition-all text-left group ${currentTrack?.id === song.id ? 'bg-blue-500/10 border border-blue-500/20' : 'hover:bg-white/5'}`}
-                        >
-                          <div className="w-6 h-6 rounded flex items-center justify-center bg-white/5 font-mono font-bold text-xs italic text-white/10 group-hover:text-amber-500">
-                            {idx + 1}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className={`text-[11px] ${currentTrack?.id === song.id ? 'text-blue-200' : 'text-white/60'} truncate`}>{song.name}</p>
-                            <div className="flex items-center gap-2">
-                              <div className="h-1 bg-white/5 rounded-full flex-1 overflow-hidden">
-                                <div className="h-full bg-amber-500/50" style={{ width: `${song.score}%` }} />
+                            <div className="flex-1 min-w-0">
+                              <p className={`text-[11px] ${currentTrack?.id === song.id ? 'text-blue-200' : 'text-white/60'} truncate`}>{song.name}</p>
+                              <div className="flex items-center gap-2">
+                                <div className="h-1 bg-white/5 rounded-full flex-1 overflow-hidden">
+                                  <div className="h-full bg-amber-500/50" style={{ width: `${song.score}%` }} />
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </button>
-                      ))}
-                    </>
-                  )}
-                </div>
+                          </button>
+                        ))}
+                      </>
+                    )}
+                  </div>
 
-                {/* 当前播放 */}
-                <div className={`pt-4 border-t border-white/10 transition-all duration-500 ${currentTrack ? 'opacity-100 translate-y-0' : 'opacity-20 translate-y-4 pointer-events-none'}`}>
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className={`w-12 h-12 rounded-full overflow-hidden border border-blue-500/50 ${isPlaying ? 'animate-[spin_10s_linear_infinite]' : ''}`}>
-                      <img src={currentTrack?.albumArt || "https://y.gtimg.cn/music/photo_new/T002R300x300M000002e3nFs3ZIs62.jpg"} className="w-full h-full object-cover" alt="album" />
+                  {/* 当前播放 */}
+                  <div className={`pt-4 border-t border-white/10 transition-all duration-500 ${currentTrack ? 'opacity-100 translate-y-0' : 'opacity-20 translate-y-4 pointer-events-none'}`}>
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className={`w-12 h-12 rounded-full overflow-hidden border border-blue-500/50 ${isPlaying ? 'animate-[spin_10s_linear_infinite]' : ''}`}>
+                        <img src={currentTrack?.albumArt || "https://y.gtimg.cn/music/photo_new/T002R300x300M000002e3nFs3ZIs62.jpg"} className="w-full h-full object-cover" alt="album" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-blue-100 truncate">{currentTrack?.name || "未在播放"}</p>
+                        <p className="text-[10px] text-white/30 truncate">{currentTrack?.artist || "星辰旋律"}</p>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs text-blue-100 truncate">{currentTrack?.name || "未在播放"}</p>
-                      <p className="text-[10px] text-white/30 truncate">{currentTrack?.artist || "星辰旋律"}</p>
+
+                    {/* 歌词动态显示 (面板版) */}
+                    <div className="h-10 flex items-center justify-center text-center px-2 mb-4 bg-white/5 rounded-xl border border-white/5">
+                      <p className="text-[10px] text-blue-200/70 italic line-clamp-1">
+                        {currentLyric || (lyrics.length > 0 ? "～ 宇宙信号同步中 ～" : "暂无歌词数据")}
+                      </p>
+                    </div>
+
+                    <div className="flex justify-between gap-2">
+                      <button className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded-full text-xs transition-all">⏮</button>
+                      <button
+                        onClick={togglePlay}
+                        className="flex-1 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded-full text-xs transition-all"
+                      >
+                        {isPlaying ? "⏸" : "▶"}
+                      </button>
+                      <button className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded-full text-xs transition-all">⏭</button>
                     </div>
                   </div>
-
-                  {/* 歌词动态显示 (面板版) */}
-                  <div className="h-10 flex items-center justify-center text-center px-2 mb-4 bg-white/5 rounded-xl border border-white/5">
-                    <p className="text-[10px] text-blue-200/70 italic line-clamp-1">
-                      {currentLyric || (lyrics.length > 0 ? "～ 宇宙信号同步中 ～" : "暂无歌词数据")}
-                    </p>
-                  </div>
-
-                  <div className="flex justify-between gap-2">
-                    <button className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded-full text-xs transition-all">⏮</button>
-                    <button
-                      onClick={togglePlay}
-                      className="flex-1 py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded-full text-xs transition-all"
-                    >
-                      {isPlaying ? "⏸" : "▶"}
-                    </button>
-                    <button className="flex-1 py-2 bg-white/5 hover:bg-white/10 rounded-full text-xs transition-all">⏭</button>
-                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            <button
-              onClick={() => { setMusicUser(null); setLoginQR(null); setCookie(''); }}
-              className="mt-4 py-2 text-[9px] text-white/20 hover:text-red-400/60 uppercase tracking-widest transition-all"
-            >
-              断开连接
-            </button>
+              <button
+                onClick={() => { setMusicUser(null); setLoginQR(null); setCookie(''); }}
+                className="mt-4 py-2 text-[9px] text-white/20 hover:text-red-400/60 uppercase tracking-widest transition-all"
+              >
+                断开连接
+              </button>
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* --- 全局顶部悬浮歌词 (UI Mirror) --- */}
-      {currentLyric && isStarted && (
-        <div className="fixed top-[8%] left-1/2 -translate-x-1/2 z-[999] pointer-events-none w-full max-w-4xl px-4 flex flex-col items-center">
-          <div className="lyric-mirror-container">
-            <p className="lyric-mirror-text" style={{ fontSize: `${lyricScale * 24}px` }}>
-              {currentLyric}
-            </p>
-            {/* 扫光装饰线 */}
-            <div className="lyric-mirror-scanline" />
+      {
+        showLyrics && currentLyric && isStarted && (
+          <div className="fixed top-[8%] left-1/2 -translate-x-1/2 z-[999] pointer-events-none w-full max-w-4xl px-4 flex flex-col items-center">
+            <div className="lyric-mirror-container">
+              <p className="lyric-mirror-text" style={{ fontSize: `${lyricScale * 24}px` }}>
+                {currentLyric}
+              </p>
+              {/* 扫光装饰线 */}
+              <div className="lyric-mirror-scanline" />
+            </div>
           </div>
-        </div>
-      )}
+        )
+      }
     </div>
   );
 }

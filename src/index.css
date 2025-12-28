@@ -1,8 +1,3 @@
-@font-face {
-  font-family: 'UranusPixel';
-  src: url('/Uranus_Pixel_11Px.ttf') format('truetype');
-}
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -20,6 +15,7 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background: #000;
 }
 
 #root {
@@ -37,7 +33,102 @@ body {
   scrollbar-width: none;
 }
 
-/* Integrated Menu Gallery (Auto-Scrolling Stacked Layout) */
+/* --- Immersive Side Menus --- */
+.side-menu-wrapper {
+  position: absolute;
+  top: 6px;
+  height: calc(100vh - 48px);
+  z-index: 30;
+  transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto;
+}
+
+/* Left Panel: Controls */
+.left-menu-wrapper {
+  left: 0;
+  padding-left: 24px;
+  transform: translateX(-100%);
+}
+
+.left-menu-wrapper:hover,
+.left-menu-wrapper.active {
+  transform: translateX(0);
+}
+
+/* Right Panel: Music */
+.right-menu-wrapper {
+  right: 0;
+  padding-right: 24px;
+  transform: translateX(100%);
+}
+
+.right-menu-wrapper:hover,
+.right-menu-wrapper.active {
+  transform: translateX(0);
+}
+
+/* Trigger Markers */
+.side-trigger-marker {
+  position: fixed;
+  top: 80px;
+  width: 50px;
+  height: 50px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 50;
+  pointer-events: auto;
+  cursor: pointer;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+  opacity: 0.8;
+}
+
+.side-trigger-marker:hover {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 0 20px rgba(59, 130, 246, 0.4);
+  transform: scale(1.1);
+  opacity: 1;
+}
+
+.trigger-icon {
+  font-size: 24px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+  transition: transform 0.5s ease;
+}
+
+.left-trigger:hover .trigger-icon {
+  transform: rotate(180deg);
+}
+
+.right-trigger:hover .trigger-icon {
+  transform: rotate(15deg) scale(1.2);
+}
+
+.left-trigger {
+  left: 20px;
+}
+
+.right-trigger {
+  right: 20px;
+}
+
+.left-trigger:hover+.left-menu-wrapper,
+.right-trigger:hover+.right-menu-wrapper {
+  transform: translateX(0);
+}
+
+/* Show markers when menu is hidden */
+.hidden-ui .side-trigger-marker {
+  opacity: 0.6;
+}
+
+/* --- Integrated Menu Gallery --- */
 .menu-gallery-stack {
   display: flex;
   align-items: center;
@@ -46,10 +137,7 @@ body {
   margin-top: 5px;
   width: 100%;
   max-width: 280px;
-  /* 约 7 张图的可见宽度 */
   overflow-x: scroll;
-  overflow-y: visible;
-  /* 允许 hover 时向上弹出 */
   scrollbar-width: none;
   position: relative;
   mask-image: linear-gradient(to right, transparent, black 10%, black 90%, transparent);
@@ -64,13 +152,11 @@ body {
   width: 50px;
   height: 50px;
   margin-right: -10px;
-  /* 紧凑堆叠 */
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(10, 10, 10, 0.8);
   backdrop-filter: blur(8px);
   cursor: pointer;
-  overflow: visible;
   transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
   z-index: 1;
   flex-shrink: 0;
@@ -89,7 +175,6 @@ body {
   z-index: 100 !important;
   transform: translateY(-10px) scale(1.3);
   margin-right: 5px;
-  /* 弹出时给一点空间 */
   border-color: rgba(59, 130, 246, 0.8);
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6);
 }
@@ -105,52 +190,30 @@ body {
   opacity: 1;
 }
 
-/* Active Dot */
-.mini-dot {
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #3b82f6;
-  box-shadow: 0 0 8px #3b82f6;
-  opacity: 0;
-  z-index: 10;
-}
-
-.menu-gallery-item.active .mini-dot {
-  opacity: 1;
-  animation: dot-glow 1.5s infinite;
-}
-
-/* Lyric Mirror UI (Top Floating Glassmorphism) */
+/* --- Lyric Mirror UI --- */
 .lyric-mirror-container {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 15px 40px;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(20px);
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow:
-    0 20px 50px rgba(0, 0, 0, 0.5),
-    inset 0 0 20px rgba(59, 130, 246, 0.1);
+  padding: 10px 40px;
+  background: transparent;
+  backdrop-filter: none;
+  border: none;
+  box-shadow: none;
   animation: lyric-appear 0.8s cubic-bezier(0.23, 1, 0.32, 1);
   position: relative;
   overflow: hidden;
 }
 
 .lyric-mirror-text {
-  font-family: 'UranusPixel', sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color: #fff;
   text-align: center;
-  letter-spacing: 0.1em;
+  font-weight: 300;
+  letter-spacing: 0.05em;
   text-shadow:
-    0 0 10px rgba(59, 130, 246, 0.8),
-    0 0 20px rgba(59, 130, 246, 0.4),
-    0 0 40px rgba(59, 130, 246, 0.2);
+    0 2px 10px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(59, 130, 246, 0.2);
   margin: 0;
   transition: all 0.5s ease;
   line-height: 1.4;
@@ -164,9 +227,8 @@ body {
   height: 100%;
   background: linear-gradient(to right,
       transparent,
-      rgba(59, 130, 246, 0.05),
-      rgba(255, 255, 255, 0.1),
-      rgba(59, 130, 246, 0.05),
+      rgba(59, 130, 246, 0.03),
+      rgba(255, 255, 255, 0.05),
       transparent);
   transform: skewX(-20deg);
   animation: lyric-scan 4s infinite linear;
@@ -174,9 +236,9 @@ body {
 
 @keyframes lyric-appear {
   0% {
-    transform: translateY(-30px);
+    transform: translateY(-20px);
     opacity: 0;
-    filter: blur(10px);
+    filter: blur(5px);
   }
 
   100% {
