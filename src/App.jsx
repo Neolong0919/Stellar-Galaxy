@@ -125,19 +125,18 @@ const stellarVertexShader = `
         outColor *= 1.5; // 增强漩涡亮度
     } 
     else if (dispersion > 0.1) {
-        // [周围氛围粒子] - 弥散活跃星云
-        // 使用 dispersion 彻底随机化半径、角度和高度，完全脱离主体轮廓
-        float envRadius = 20.0 + dispersion * 60.0; 
-        float envRotationValue = uEnvRotation * 0.5 + uAudioLow * 0.1;
-        float envAngle = dispersion * 100.0 + uTime * envRotationValue; 
+        // [周围氛围粒子] - 弥散立体盘旋
+        // 使用用户对齐的角度逻辑
+        float envRadius = length(baseTargetPos.xz); 
+        float envAngle = atan(baseTargetPos.z, baseTargetPos.x) + uTime * (uEnvRotation * 0.5); 
+        vec3 orbitPos = vec3(cos(envAngle) * envRadius, baseTargetPos.y, sin(envAngle) * envRadius);
         
-        // 纵向弥散，不再继承 baseTargetPos.y 以去除“墙”和“影子”
-        float envY = (dispersion - 0.5) * 80.0 + sin(uTime * 0.5 + dispersion * 10.0) * 5.0;
-        vec3 orbitPos = vec3(cos(envAngle) * envRadius, envY, sin(envAngle) * envRadius);
-        currentPos = mix(vortexPos, orbitPos, t);
+        // 核心修复：出生点设为弥散随机区域 (vortexPos + 大随机偏移)，既不形成螺旋线条，也不形成中心竖线
+        vec3 spawnOrigin = vortexPos + aRandomDir * (15.0 + twinkleSpeed * 10.0); 
+        currentPos = mix(spawnOrigin, orbitPos, t);
         
-        alphaOut = mix(0.0, 0.2 + twinkle * 0.4, t); 
-        outColor = baseColor * 0.8; 
+        alphaOut = mix(0.0, 0.35 + twinkle * 0.4, t); 
+        outColor = baseColor;
     } 
     else {
         // [主体粒子] - 垂直喷发 + 边缘喷发特效
@@ -544,54 +543,75 @@ export default function App() {
           const MAX_PARTICLES = 60000;
           const pos = new Float32Array(MAX_PARTICLES * 3);
           const col = new Float32Array(MAX_PARTICLES * 3);
-          // ... 简化逻辑，只提取位置和颜色，其他属性沿用初始化 ...
 
-          let pIdx = 0;
           let tr = 0, tg = 0, tb = 0, tc = 0;
           const spreadScale = 60;
           const spreadX = spreadScale * aspect;
           const spreadY = spreadScale;
 
-          for (let y = 0; y < canvas.height && pIdx < (MAX_PARTICLES - 2400); y++) {
-            for (let x = 0; x < canvas.width && pIdx < (MAX_PARTICLES - 2400); x++) {
+          let subIdx = 0;
+          let auraIdx = 45000;
+          const SUBJECT_LIMIT = 45000;
+          const AURA_LIMIT = 57600;
+
+          for (let y = 0; y < canvas.height; y++) {
+            for (let x = 0; x < canvas.width; x++) {
               const idx = (y * canvas.width + x) * 4;
               const r = pixelData[idx] / 255, g = pixelData[idx + 1] / 255, b = pixelData[idx + 2] / 255;
               const br = (r + g + b) / 3;
+
               if (br > 0.06) {
                 tr += r; tg += g; tb += b; tc++;
-                const px = (x / canvas.width - 0.5) * spreadX;
-                const py = (0.5 - y / canvas.height) * spreadY;
-                const pz = (br - 0.5) * 10.0;
-                const i3 = pIdx * 3;
-                pos[i3] = px; pos[i3 + 1] = py; pos[i3 + 2] = pz;
-                col[i3] = r; col[i3 + 1] = g; col[i3 + 2] = b;
-                pIdx++;
-                if ((br > 0.4 || Math.random() > 0.85) && pIdx < (MAX_PARTICLES - 2400)) {
+
+                // 1. 填充主体像素 (0 - 45000)
+                if (subIdx < SUBJECT_LIMIT) {
+                  const px = (x / canvas.width - 0.5) * spreadX;
+                  const py = (0.5 - y / canvas.height) * spreadY;
+                  const pz = (br - 0.5) * 10.0;
+                  const i3 = subIdx * 3;
+                  pos[i3] = px; pos[i3 + 1] = py; pos[i3 + 2] = pz;
+                  col[i3] = r; col[i3 + 1] = g; col[i3 + 2] = b;
+                  subIdx++;
+                }
+
+                // 2. 填充氛围粒子 (45000 - 57600)
+                if (Math.random() > 0.85 && auraIdx < AURA_LIMIT) {
                   const angle = Math.random() * Math.PI * 2;
                   const radius = spreadX * (0.5 + Math.random() * 0.8);
                   const envX = Math.cos(angle) * radius;
-                  const envY = py + (Math.random() - 0.5) * spreadY * 2.0;
+                  const envY = (Math.random() - 0.5) * spreadY * 2.5;
                   const envZ = Math.sin(angle) * radius;
-                  const e3 = pIdx * 3;
+                  const e3 = auraIdx * 3;
                   pos[e3] = envX; pos[e3 + 1] = envY; pos[e3 + 2] = envZ;
                   col[e3] = r * 0.85; col[e3 + 1] = g * 0.85; col[e3 + 2] = b * 0.85;
-                  pIdx++;
+                  auraIdx++;
                 }
               }
             }
           }
-          // 确保漩涡粒子始终在固定的最后 2400 个槽位
-          const ringStartIdx = MAX_PARTICLES - 2400;
 
-          // 如果主体粒子没填满前面的空间，先填充冗余
-          const activeSubjectCount = pIdx || 1;
-          while (pIdx < ringStartIdx) {
-            const src = Math.floor(Math.random() * activeSubjectCount) * 3;
-            const i3 = pIdx * 3;
+          // 3. 冗余填充 (确保数组填满)
+          const activeSubCount = subIdx || 1;
+          while (subIdx < SUBJECT_LIMIT) {
+            const src = Math.floor(Math.random() * activeSubCount) * 3;
+            const i3 = subIdx * 3;
             pos[i3] = pos[src]; pos[i3 + 1] = pos[src + 1]; pos[i3 + 2] = pos[src + 2];
             col[i3] = col[src]; col[i3 + 1] = col[src + 1]; col[i3 + 2] = col[src + 2];
-            pIdx++;
+            subIdx++;
           }
+          while (auraIdx < AURA_LIMIT) {
+            const src = Math.floor(Math.random() * (subIdx || 1)) * 3;
+            const angle = Math.random() * Math.PI * 2;
+            const radius = spreadX * (0.6 + Math.random() * 0.9); // 确保有足够半径
+            const i3 = auraIdx * 3;
+            pos[i3] = Math.cos(angle) * radius;
+            pos[i3 + 1] = (Math.random() - 0.5) * spreadY * 2.5;
+            pos[i3 + 2] = Math.sin(angle) * radius;
+            col[i3] = col[src] * 0.85; col[i3 + 1] = col[src + 1] * 0.85; col[i3 + 2] = col[src + 2] * 0.85;
+            auraIdx++;
+          }
+
+          let pIdx = 57600;
 
           // 2. 螺旋吸积盘 (还原漩涡逻辑)
           const spiralArms = 3;
@@ -624,7 +644,10 @@ export default function App() {
               pIdx++;
             }
           }
-          const mainColor = `#${Math.round(tr / tc * 255).toString(16).padStart(2, '0')}${Math.round(tg / tc * 255).toString(16).padStart(2, '0')}${Math.round(tb / tc * 255).toString(16).padStart(2, '0')}`;
+          const avgR = tc > 0 ? Math.round(tr / tc * 255) : 127;
+          const avgG = tc > 0 ? Math.round(tg / tc * 255) : 127;
+          const avgB = tc > 0 ? Math.round(tb / tc * 255) : 127;
+          const mainColor = `#${avgR.toString(16).padStart(2, '0')}${avgG.toString(16).padStart(2, '0')}${avgB.toString(16).padStart(2, '0')}`;
 
           // 生成缩略图
           const thumbCanvas = document.createElement('canvas');
@@ -686,11 +709,14 @@ export default function App() {
 
     // 其他随机属性
     const siz = new Float32Array(MAX_PARTICLES).map(() => 0.1 + Math.random() * 0.3);
-    const disp = new Float32Array(MAX_PARTICLES).map(() => Math.random() > 0.8 ? Math.random() * 2.0 : 0.0);
+    const disp = new Float32Array(MAX_PARTICLES).fill(0);
+    // 45000 - 57600 为氛围粒子，标记高 dispersion 触发氛围逻辑
+    for (let i = 45000; i < 57600; i++) disp[i] = 1.0;
+
     const twin = new Float32Array(MAX_PARTICLES).map(() => Math.random());
     const ring = new Float32Array(MAX_PARTICLES).fill(0);
-    // 最后 2400 个粒子标记为漩涡环
-    for (let i = MAX_PARTICLES - 2400; i < MAX_PARTICLES; i++) ring[i] = 1.0;
+    // 57600 - 60000 标记为漩涡环
+    for (let i = 57600; i < MAX_PARTICLES; i++) ring[i] = 1.0;
 
     const large = new Float32Array(MAX_PARTICLES).map(() => Math.random() > 0.95 ? 1.0 : 0.0);
     const rndDir = new Float32Array(MAX_PARTICLES * 3).map(() => Math.random() - 0.5);
@@ -734,27 +760,29 @@ export default function App() {
   const triggerNextMorph = (targetItem = null) => {
     if (gallery.length === 0 || isMorphing) return;
 
-    // 顺序逻辑：找下一个
-    let nextItem = targetItem;
-    if (!nextItem) {
-      const nextIdx = (currentIdx + 1) % gallery.length;
-      nextItem = gallery[nextIdx];
-      setCurrentIdx(nextIdx);
+    let targetIdx;
+    let nextItem;
+
+    if (targetItem) {
+      targetIdx = gallery.findIndex(item => item === targetItem);
+      if (targetIdx === -1) targetIdx = gallery.findIndex(item => item.name === targetItem.name);
+      if (targetIdx === -1) return;
+      nextItem = gallery[targetIdx];
     } else {
-      // 如果是点击卡牌，同步索引
-      const idx = gallery.findIndex(item => item.name === nextItem.name);
-      if (idx !== -1) setCurrentIdx(idx);
+      // 核心：使用函数式更新来获取最新索引，但把逻辑移出 setter 以避免副作用冲突
+      // 为了稳定，我们直接根据当前的 currentIdx 计算
+      targetIdx = (currentIdx + 1) % gallery.length;
+      nextItem = gallery[targetIdx];
     }
 
-    // 如果只有一张图，或者选到了正在显示的（且不是点击卡牌），则不做动作
-    if (!targetItem && gallery.length > 1 && nextItem.name === nebulaInfo?.name) {
-      // 兜底：如果卡住了，强制走下一个
-      const forceIdx = (currentIdx + 1) % gallery.length;
-      nextItem = gallery[forceIdx];
-      setCurrentIdx(forceIdx);
-    }
+    if (!nextItem) return;
 
-    // 先把当前的目标“变成”起始点
+    console.log(`[形态引擎] 物理跃迁: ${currentIdx} -> ${targetIdx} / ${gallery.length}`);
+
+    // 1. 设置索引
+    setCurrentIdx(targetIdx);
+
+    // 2. 执行物理迁移
     promoteTargetToSource();
 
     if (sceneRef.current && sceneRef.current.constellation) {
@@ -764,9 +792,10 @@ export default function App() {
       geo.attributes.customColor2.array.set(nextItem.col);
       geo.attributes.customColor2.needsUpdate = true;
 
-      setNebulaInfo2({ name: nextItem.name, lore: "维度调谐中，形态跃迁即将完成...", mainColor: nextItem.mainColor });
-      setNebulaInfo({ name: nextItem.name, lore: "能量在图库间共鸣，粒子流向新的坐标。", mainColor: nextItem.mainColor });
-      setTimeLeft(3); // 点击后重置 3 秒计时
+      setNebulaInfo2({ name: nextItem.name, lore: "形态跃迁中，粒子坐标正在重新定向...", mainColor: nextItem.mainColor });
+      setNebulaInfo({ name: nextItem.name, lore: "能量在图库间共鸣，粒子流向新的形态。", mainColor: nextItem.mainColor });
+
+      setTimeLeft(3);
       startMorphEvolution();
     }
   };
@@ -791,31 +820,29 @@ export default function App() {
     requestAnimationFrame(step);
   };
 
-  // 自动循环 + 倒计时 Effect
+  // 优化的自动流转逻辑
   useEffect(() => {
-    let timer;
-    let countdownInterval;
+    if (!isAutoCycle || isMorphing || gallery.length <= 1) return;
 
-    if (isAutoCycle && !isMorphing && gallery.length > 0) {
-      if (timeLeft <= 0) setTimeLeft(3); // 强制 3 秒显示时长
+    const timer = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          // 这里不再直接调用 triggerNextMorph，避免 setter 冲突
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
 
-      countdownInterval = setInterval(() => {
-        setTimeLeft(prev => {
-          if (prev <= 1) {
-            clearInterval(countdownInterval);
-            triggerNextMorph();
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
+    return () => clearInterval(timer);
+  }, [isAutoCycle, isMorphing, gallery.length]);
+
+  // 独立监听 timeLeft，当到 0 时触发跃迁
+  useEffect(() => {
+    if (isAutoCycle && !isMorphing && timeLeft === 0 && gallery.length > 1) {
+      triggerNextMorph();
     }
-
-    return () => {
-      clearInterval(countdownInterval);
-      clearTimeout(timer);
-    };
-  }, [isAutoCycle, isMorphing, gallery.length, nebulaInfo]);
+  }, [timeLeft, isAutoCycle, isMorphing]);
 
   return (
     <div className="relative w-full h-screen bg-[#000001] overflow-hidden text-white font-sans">
@@ -855,7 +882,7 @@ export default function App() {
                     className="relative flex-shrink-0 w-16 h-16 rounded-xl border border-white/10 overflow-hidden cursor-pointer transition-all duration-300 hover:scale-110 hover:-translate-y-1 hover:border-blue-500/50 group/card"
                   >
                     <img src={item.thumb} alt={item.name} className="w-full h-full object-cover opacity-60 group-hover/card:opacity-100 transition-opacity" />
-                    {nebulaInfo?.name === item.name && (
+                    {currentIdx === idx && (
                       <div className="absolute inset-0 bg-blue-500/20 flex items-center justify-center">
                         <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" />
                       </div>
@@ -865,12 +892,12 @@ export default function App() {
               </div>
             </div>
 
+            <div className="h-[1px] w-full bg-white/5 my-2" />
+
             <div>
               <label className="text-[10px] text-blue-300 tracking-wider uppercase block mb-2">星云旋转: {envRotation.toFixed(2)}</label>
               <input type="range" min="0" max="1" step="0.01" value={envRotation} onChange={(e) => setEnvRotation(parseFloat(e.target.value))} className="w-full h-1 bg-blue-500/20 rounded-lg appearance-none cursor-pointer" />
             </div>
-
-            <div className="h-[1px] w-full bg-white/5 my-2" />
 
             <div>
               <label className="text-[10px] text-white/60 tracking-wider uppercase block mb-2">饱和度: {saturation.toFixed(2)}</label>
@@ -951,7 +978,7 @@ export default function App() {
 
             <div className="flex flex-col gap-3">
               <div className="flex gap-2">
-                <button className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full transition-all" onClick={() => { setNebulaInfo(null); setGallery([]); setIsAutoCycle(true); setMorph(0); setTimeLeft(0); }}>重置</button>
+                <button className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full transition-all" onClick={() => { setNebulaInfo(null); setGallery([]); setIsAutoCycle(true); setMorph(0); setTimeLeft(0); setCurrentIdx(0); }}>重置</button>
                 <label className="flex-1 py-3 text-[10px] tracking-[0.2em] uppercase font-bold text-blue-400 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-full cursor-pointer text-center flex items-center justify-center">
                   <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
                   扩充
