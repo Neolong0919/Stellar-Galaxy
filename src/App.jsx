@@ -542,8 +542,16 @@ export default function App() {
           const aspect = img.width / img.height;
           const canvas = document.createElement('canvas');
           const ctx = canvas.getContext('2d');
-          const res = 260;
-          canvas.width = res; canvas.height = Math.floor(res / aspect);
+
+          // 动态采样目标：确保总像素点在 42000 左右，完美契合 45000 的主体上限
+          // 让 w * (w/aspect) = 42000 => w = sqrt(42000 * aspect)
+          const targetTotalPixels = 42000;
+          const sampleWidth = Math.sqrt(targetTotalPixels * aspect);
+          const sampleHeight = sampleWidth / aspect;
+
+          canvas.width = Math.floor(sampleWidth);
+          canvas.height = Math.floor(sampleHeight);
+
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
           const pixelData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
 
@@ -880,33 +888,6 @@ export default function App() {
 
             <div className="h-[1px] w-full bg-white/5 my-2" />
 
-            <div className="relative">
-              <div className="flex justify-between items-center mb-3">
-                <label className="text-[10px] text-white/40 uppercase tracking-tight font-light">图库阵列 ({gallery.length})</label>
-                <label className="text-[9px] text-blue-400 cursor-pointer hover:underline">
-                  <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
-                  + 扩充
-                </label>
-              </div>
-
-              <div className="flex gap-2 overflow-x-auto pb-4 no-scrollbar scroll-smooth group/gallery">
-                {gallery.map((item, idx) => (
-                  <div
-                    key={idx}
-                    onClick={() => triggerNextMorph(item)}
-                    className="relative flex-shrink-0 w-16 h-16 rounded-xl border border-white/10 overflow-hidden cursor-pointer transition-all duration-300 hover:scale-110 hover:-translate-y-1 hover:border-blue-500/50 group/card"
-                  >
-                    <img src={item.thumb} alt={item.name} className="w-full h-full object-cover opacity-60 group-hover/card:opacity-100 transition-opacity" />
-                    {currentIdx === idx && (
-                      <div className="absolute inset-0 bg-blue-500/20 flex items-center justify-center">
-                        <div className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-pulse" />
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
             <div className="h-[1px] w-full bg-white/5 my-2" />
 
             <div>
@@ -948,42 +929,67 @@ export default function App() {
         <button onClick={() => setShowControls(true)} className="absolute top-6 left-6 w-10 h-10 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-full flex items-center justify-center pointer-events-auto z-30 hover:bg-white/20 transition-all">⚙️</button>
       )}
 
-      <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-center p-6 text-center">
-        {!nebulaInfo && !isProcessing && (
-          <div className="max-w-xl pointer-events-auto animate-in fade-in zoom-in duration-1000">
-            <h1 className="text-5xl font-thin tracking-[1.2em] mb-4 uppercase text-transparent bg-clip-text bg-gradient-to-r from-blue-100 via-white to-blue-400 text-center">STELLAR GALAXY</h1>
-            <p className="text-xs font-light tracking-[0.5em] opacity-30 mb-16 uppercase italic text-center">多维流转 · 奇点喷发 · 粒子守恒</p>
-            <div className="flex gap-4 pointer-events-auto justify-center">
-              <label className="group relative inline-block cursor-pointer">
-                <input type="file" accept="audio/*" onChange={handleMusicUpload} className="hidden" />
-                <div className="px-8 py-4 border border-white/10 rounded-full bg-white/5 backdrop-blur-xl transition-all duration-300 hover:bg-white hover:text-black hover:border-white">
-                  <span className="mr-2">♪</span>
-                  <span className="tracking-[0.2em] font-medium text-xs">{audioData ? "更换音乐" : "上传音乐"}</span>
-                </div>
-              </label>
-              <label className="group relative inline-block cursor-pointer">
-                <input type="file" accept="image/*" multiple onChange={handleMultiUpload} className="hidden" />
-                <div className="px-16 py-4 border border-white/10 rounded-full bg-white/5 backdrop-blur-xl transition-all duration-500 hover:bg-white hover:text-black hover:border-white">
-                  <span className="mr-3 opacity-60 group-hover:opacity-100">✦</span>
-                  <span className="tracking-[0.4em] font-medium text-xs">启动创世</span>
-                </div>
-              </label>
-            </div>
-            {audioData && (
-              <div className="mt-6 flex items-center gap-4 pointer-events-auto animate-in fade-in slide-in-from-bottom-4 justify-center">
-                <button onClick={togglePlay} className="w-10 h-10 flex items-center justify-center rounded-full border border-white/20 bg-white/5 hover:bg-white/20 transition-all">{isPlaying ? "⏸" : "▶"}</button>
-                <div className="text-[10px] opacity-60 tracking-widest uppercase truncate max-w-[200px]">{isPlaying ? "Playing: " : "Paused: "} {audioData.name}</div>
+      <div className="absolute inset-0 z-20 pointer-events-none flex items-center p-6">
+        {/* 左侧正方形图库 */}
+        {nebulaInfo && !isProcessing && gallery.length > 0 && (
+          <div className="left-gallery-container no-scrollbar">
+            {gallery.map((item, idx) => (
+              <div
+                key={idx}
+                onClick={() => triggerNextMorph(item)}
+                className={`square-card ${currentIdx === idx ? 'active' : ''}`}
+                title={item.name}
+              >
+                <img src={item.thumb} alt={item.name} />
+                {currentIdx === idx && <div className="active-indicator" />}
               </div>
-            )}
+            ))}
+
+            {/* 快速上传入口 */}
+            <label className="square-card flex items-center justify-center bg-white/5 border-dashed hover:bg-white/10 hover:border-blue-500/50">
+              <input type="file" accept="image/*" multiple onChange={(e) => handleMultiUpload(e, true)} className="hidden" />
+              <span className="text-xl text-white/30 font-thin">+</span>
+            </label>
           </div>
         )}
 
-        {isProcessing && (
-          <div className="flex flex-col items-center">
-            <div className="w-10 h-10 border-2 border-white/10 border-t-blue-500 rounded-full animate-spin mb-6" />
-            <p className="text-[10px] tracking-[0.6em] font-light uppercase opacity-40">初始化奇点漩涡...</p>
-          </div>
-        )}
+        <div className="flex-1 flex flex-col items-center justify-center text-center pointer-events-none">
+          {!nebulaInfo && !isProcessing && (
+            <div className="max-w-xl pointer-events-auto animate-in fade-in zoom-in duration-1000">
+              <h1 className="text-5xl font-thin tracking-[1.2em] mb-4 uppercase text-transparent bg-clip-text bg-gradient-to-r from-blue-100 via-white to-blue-400 text-center">STELLAR GALAXY</h1>
+              <p className="text-xs font-light tracking-[0.5em] opacity-30 mb-16 uppercase italic text-center">多维流转 · 奇点喷发 · 粒子守恒</p>
+              <div className="flex gap-4 pointer-events-auto justify-center">
+                <label className="group relative inline-block cursor-pointer">
+                  <input type="file" accept="audio/*" onChange={handleMusicUpload} className="hidden" />
+                  <div className="px-8 py-4 border border-white/10 rounded-full bg-white/5 backdrop-blur-xl transition-all duration-300 hover:bg-white hover:text-black hover:border-white">
+                    <span className="mr-2">♪</span>
+                    <span className="tracking-[0.2em] font-medium text-xs">{audioData ? "更换音乐" : "上传音乐"}</span>
+                  </div>
+                </label>
+                <label className="group relative inline-block cursor-pointer">
+                  <input type="file" accept="image/*" multiple onChange={handleMultiUpload} className="hidden" />
+                  <div className="px-16 py-4 border border-white/10 rounded-full bg-white/5 backdrop-blur-xl transition-all duration-500 hover:bg-white hover:text-black hover:border-white">
+                    <span className="mr-3 opacity-60 group-hover:opacity-100">✦</span>
+                    <span className="tracking-[0.4em] font-medium text-xs">启动创世</span>
+                  </div>
+                </label>
+              </div>
+              {audioData && (
+                <div className="mt-6 flex items-center gap-4 pointer-events-auto animate-in fade-in slide-in-from-bottom-4 justify-center">
+                  <button onClick={togglePlay} className="w-10 h-10 flex items-center justify-center rounded-full border border-white/20 bg-white/5 hover:bg-white/20 transition-all">{isPlaying ? "⏸" : "▶"}</button>
+                  <div className="text-[10px] opacity-60 tracking-widest uppercase truncate max-w-[200px]">{isPlaying ? "Playing: " : "Paused: "} {audioData.name}</div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {isProcessing && (
+            <div className="flex flex-col items-center">
+              <div className="w-10 h-10 border-2 border-white/10 border-t-blue-500 rounded-full animate-spin mb-6" />
+              <p className="text-[10px] tracking-[0.6em] font-light uppercase opacity-40">初始化奇点漩涡...</p>
+            </div>
+          )}
+        </div>
 
         {nebulaInfo && !isProcessing && (
           <div className="absolute bottom-10 left-10 max-w-xs w-full p-8 bg-black/60 backdrop-blur-3xl border border-white/5 rounded-[2.5rem] animate-in slide-in-from-left-12 duration-1000 pointer-events-auto text-left">
