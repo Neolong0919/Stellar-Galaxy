@@ -55,10 +55,8 @@ const stellarVertexShader = `
   void main() {
     vStarType = starType;
     
-    // 基础闪烁 + 音乐高频影响
-    float speedBoost = 1.0 + uAudioHigh * 3.0;
-    float noise = sin(uTime * (1.5 + twinkleSpeed * 2.0) * speedBoost + twinkleSpeed * 100.0);
-    float twinkle = noise * 0.5 + 0.5;
+    // 基础闪烁 + 音乐高频影响 (简化计算)
+    float twinkle = sin(uTime * (1.5 + twinkleSpeed * 2.0) * (1.0 + uAudioHigh * 3.0) + twinkleSpeed * 100.0) * 0.5 + 0.5;
     vTwinkle = twinkle;
 
     // --- 粒子插值内核 ---
@@ -219,7 +217,8 @@ const stellarFragmentShader = `
     float r = dot(cxy, cxy);
     if (r > 1.0) discard;
 
-    float strength = pow(1.0 - r, 10.0);
+    float strength = (1.0 - r) * (1.0 - r) * (1.0 - r); // 使用简单乘法代替 pow(x, 10.0) 显著提升性能
+    strength *= strength * strength; // 约等于 pow(1.0-r, 9.0) 但快得多
     float beam = 0.0;
     
     if (vStarType < 0.15 && vAlpha > 0.6) {
@@ -227,7 +226,7 @@ const stellarFragmentShader = `
         beam += max(0.0, 1.0 - abs(cxy.y) * 20.0) * max(0.0, 1.0 - abs(cxy.x) * 5.0);
     } 
     
-    float halo = exp(-r * 6.5) * 0.18;
+    float halo = exp(-r * 6.5) * 0.15; // 稍微降低光晕复杂度
     
     // 颜色修复：使用可调节参数
     // 饱和度增强
@@ -292,7 +291,24 @@ export default function App() {
   const [playlists, setPlaylists] = useState([]);         // 收藏歌单
   const [currentTrack, setCurrentTrack] = useState(null); // 当前播放歌曲
   const [isMusicLoading, setIsMusicLoading] = useState(false);
-  const MUSIC_API = "http://localhost:4000";               // Netease API 端口 (与前端域名保持一致更稳定)
+  // 核心设定
+  const PARTICLE_SIZE = 120;
+  const MUSIC_API = "http://localhost:4000";
+
+  // Robust fetch with retry for startup
+  const fetchWithRetry = async (url, options = {}, retries = 5, delay = 2000) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const res = await fetch(url, options);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res;
+      } catch (err) {
+        if (i === retries - 1) throw err;
+        console.log(`Connection failed, retrying in ${delay}ms... (${i + 1}/${retries})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+  };               // Netease API 端口 (与前端域名保持一致更稳定)
 
   // 新增功能状态
   const [musicMode, setMusicMode] = useState('playlist'); // 当前模式: playlist, recommend, fm, history
@@ -374,12 +390,12 @@ export default function App() {
     camera.position.set(0, 30, 130);
 
     const renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: false, // 后期处理开启时关闭抗锯齿性能更好
       powerPreference: "high-performance",
-      preserveDrawingBuffer: true
+      preserveDrawingBuffer: false // 除非录像否则关闭以提升性能
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // 限制像素比例在 1.5 以内防止 4K 屏过慢
     containerRef.current.appendChild(renderer.domElement);
     console.log('Canvas 已添加到 DOM');
     console.log('Canvas 尺寸:', renderer.domElement.width, 'x', renderer.domElement.height);
@@ -391,7 +407,9 @@ export default function App() {
 
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(scene, camera));
-    composer.addPass(new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.4, 0.2));
+    // 降低 Bloom 画布分辨率及强度以提升低端设备性能
+    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth / 2, window.innerHeight / 2), 1.0, 0.4, 0.3);
+    composer.addPass(bloomPass);
 
     const clock = new THREE.Clock();
     sceneRef.current = { scene, camera, renderer, composer, constellation: null, controls, clock, startTime: -1 };
@@ -539,7 +557,8 @@ export default function App() {
     setIsProcessing(true);
     try {
       // 核心改为：从后端接口获取当前文件夹内的所有图片
-      const listRes = await fetch(MUSIC_API + '/local/images');
+      // 使用重试机制等待后端启动 (最多等待 10秒)
+      const listRes = await fetchWithRetry(MUSIC_API + '/local/images', {}, 5, 2000);
       let listData;
       try {
         listData = await listRes.json();
@@ -548,11 +567,17 @@ export default function App() {
       }
 
       let imageUrls = [];
-      if (listData.code === 200 && listData.images.length > 0) {
-        imageUrls = listData.images.map(name => '/image/' + name);
+      if (listData.code === 200 && listData.images) {
+        // 构建完整的本地图片对象
+        imageUrls = listData.images.map(img => {
+          // 核心：使用后端托管的静态资源地址 (需要补全 baseURL)
+          // 虽然 img 只是文件名，但为了后续 fetch 能够复用逻辑，我们这里组装完整 URL
+          return `${MUSIC_API}/image/${img}`;
+        });
+        console.log(`[资源加载] 发现 ${imageUrls.length} 张本地图片`);
       } else {
         // 后退方案：如果接口失败或没图，保留最基础的核心素材
-        imageUrls = ['/image/b150350bc9b7290c8fe9351c8f787a1a.png'];
+        imageUrls = [`${MUSIC_API}/image/b150350bc9b7290c8fe9351c8f787a1a.png`];
         // 如果是 500 错误，也抛出异常以便弹窗
         if (listData.code === 500) throw new Error(listData.error);
       }
@@ -789,8 +814,21 @@ export default function App() {
     const results = [];
     for (const file of files) {
       try {
-        const data = await processImage(file, 1, true);
-        results.push(data);
+        // 先上传到服务器
+        const formData = new FormData();
+        formData.append('image', file);
+        const uploadRes = await fetch(`${MUSIC_API}/local/image/upload`, {
+          method: 'POST',
+          body: formData
+        });
+        const uploadData = await uploadRes.json();
+
+        if (uploadData.code === 200) {
+          const data = await processImage(file, 1, true);
+          results.push(data);
+        } else {
+          console.error("上传失败:", file.name, uploadData.msg);
+        }
       } catch (err) { console.error("处理失败:", file.name, err); }
     }
 
@@ -925,6 +963,49 @@ export default function App() {
     setTimeLeft(stayDuration);
     setMorph(0);
     startMorphEvolution();
+  };
+
+  const handleDeleteImage = async (e, item, idx) => {
+    e.stopPropagation(); // 防止触发切换
+    if (!confirm(`确定要彻底删除星辰“${item.name}”吗？\n此操作将同时从磁盘删除文件。`)) return;
+
+    try {
+      const filename = item.name;
+      const res = await fetch(`${MUSIC_API}/local/image/${filename}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+
+      if (data.code === 200) {
+        const newGallery = gallery.filter((_, i) => i !== idx);
+        setGallery(newGallery);
+        galleryRef.current = newGallery;
+
+        // 如果删除的是当前选中的图，自动切换
+        if (currentIdx === idx) {
+          if (newGallery.length > 0) {
+            const nextIdx = idx % newGallery.length;
+            setCurrentIdx(nextIdx);
+            currentIdxRef.current = nextIdx;
+            executeMorphSequence(newGallery[nextIdx]);
+          } else {
+            // 没有图了，重置状态
+            setNebulaInfo(null);
+            setIsStarted(false);
+          }
+        } else if (currentIdx > idx) {
+          // 如果删除的是当前索引之前的图，索引需要减 1 以保持对齐
+          const nextIdx = currentIdx - 1;
+          setCurrentIdx(nextIdx);
+          currentIdxRef.current = nextIdx;
+        }
+      } else {
+        alert("删除失败: " + data.msg);
+      }
+    } catch (err) {
+      console.error("删除请求失败:", err);
+      alert("网络错误，删除失败。");
+    }
   };
 
   const processTextToPoints = (text, density = 2) => {
@@ -1580,6 +1661,7 @@ export default function App() {
                         >
                           <img src={item.thumb} alt={item.name} />
                           <div className="mini-dot" />
+                          <div className="delete-btn" onClick={(e) => handleDeleteImage(e, item, idx)}>×</div>
                         </div>
                       ))}
                     </div>
