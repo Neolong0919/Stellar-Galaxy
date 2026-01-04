@@ -2196,7 +2196,8 @@ export default function App() {
                             <div
                               className="flex gap-3 overflow-x-auto no-scrollbar pb-2 scroll-smooth"
                               onMouseMove={(e) => {
-                                const rect = e.currentTarget.getBoundingClientRect();
+                                const container = e.currentTarget;
+                                const rect = container.getBoundingClientRect();
                                 const x = e.clientX - rect.left;
                                 const width = rect.width;
                                 const edgeThreshold = 80; // 稍微扩大触发范围保证灵敏度
@@ -2205,14 +2206,14 @@ export default function App() {
                                   scrollSpeedRef.current = (edgeThreshold - x) / 4; // 越往左越快
                                   if (!scrollScrollInterval.current) {
                                     scrollScrollInterval.current = setInterval(() => {
-                                      e.currentTarget.scrollLeft -= scrollSpeedRef.current;
+                                      if (container) container.scrollLeft -= scrollSpeedRef.current;
                                     }, 16);
                                   }
                                 } else if (x > width - edgeThreshold) {
                                   scrollSpeedRef.current = (x - (width - edgeThreshold)) / 4; // 越往右越快
                                   if (!scrollScrollInterval.current) {
                                     scrollScrollInterval.current = setInterval(() => {
-                                      e.currentTarget.scrollLeft += scrollSpeedRef.current;
+                                      if (container) container.scrollLeft += scrollSpeedRef.current;
                                     }, 16);
                                   }
                                 } else {
