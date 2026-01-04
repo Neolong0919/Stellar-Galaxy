@@ -348,6 +348,10 @@ export default function App() {
   const [currentLyric, setCurrentLyric] = useState("");   // 当前歌词
   const [nextLyric, setNextLyric] = useState("");         // 下一句歌词 (用于预备 morph)
 
+  // 新增音乐功能状态
+  const [likedSongIds, setLikedSongIds] = useState([]);   // 用户喜欢的歌曲 ID 列表
+  const [recommendPlaylists, setRecommendPlaylists] = useState([]); // 每日推荐歌单
+
   // 歌词自定义参数
   const [lyricScale, setLyricScale] = useState(1.0);      // 大小
   const [lyricDensity, setLyricDensity] = useState(2);    // 密度 (step: 1非常密 - 5稀疏)
@@ -390,10 +394,30 @@ export default function App() {
   useEffect(() => {
     const savedCookie = localStorage.getItem('netease_cookie');
     if (savedCookie) {
-      setCookie(savedCookie);
-      fetchMusicUserInfo(savedCookie);
+      // 验证 Cookie 是否有效
+      verifyCookie(savedCookie);
     }
   }, []);
+
+  const verifyCookie = async (testCookie) => {
+    try {
+      const cookieStr = encodeURIComponent(testCookie);
+      const res = await fetch(`${MUSIC_API}/login/status?cookie=${cookieStr}&timestamp=${Date.now()}`);
+      const data = await res.json();
+
+      // 检查登录状态 (data.data.account 不为空通常代表有效)
+      if (data.data && data.data.account) {
+        setCookie(testCookie);
+        fetchMusicUserInfo(testCookie);
+      } else {
+        console.warn("Cookie 已失效");
+        localStorage.removeItem('netease_cookie');
+      }
+    } catch (err) {
+      console.error("验证登录状态失败:", err);
+      // 网络错误暂不清理，避免误删
+    }
+  };
 
   // 退出登录
   const handleLogout = () => {
@@ -1330,18 +1354,60 @@ export default function App() {
         const plData = await plRes.json();
 
         if (plData.code === 200) {
-          setPlaylists(plData.playlist.map(item => ({
+          setPlaylists(plData.playlist.map((item, index) => ({
             name: item.name,
             img: item.coverImgUrl,
             id: item.id,
-            count: item.trackCount
+            count: item.trackCount,
+            isLikedList: index === 0 // 通常第一个就是“我喜欢的音乐”
           })));
         }
+
+        // 获取收藏歌曲列表
+        fetchLikeList(userData.profile.userId, userCookie || cookie);
+      } else if (userData.code === 301) {
+        // 如果后端返回 301 代表登录失效
+        console.warn("登录已失效 (301)");
+        handleLogout();
       }
     } catch (err) {
       console.error("获取网易云数据失败:", err);
     } finally {
       setIsMusicLoading(false);
+    }
+  };
+
+  // 3.1 获取喜欢的歌曲列表 (ID)
+  const fetchLikeList = async (uid, userCookie) => {
+    try {
+      const cookieStr = encodeURIComponent(userCookie || cookie);
+      const res = await fetch(`${MUSIC_API}/likelist?uid=${uid}&cookie=${cookieStr}&timestamp=${Date.now()}`);
+      const data = await res.json();
+      if (data.code === 200) {
+        setLikedSongIds(data.ids);
+      }
+    } catch (err) {
+      console.error("获取喜欢列表失败:", err);
+    }
+  };
+
+  // 3.2 收藏/取消收藏歌曲
+  const handleLikeSong = async (id, like) => {
+    try {
+      const cookieStr = encodeURIComponent(cookie);
+      const res = await fetch(`${MUSIC_API}/like?id=${id}&like=${like}&cookie=${cookieStr}&timestamp=${Date.now()}`);
+      const data = await res.json();
+      if (data.code === 200) {
+        if (like) {
+          setLikedSongIds(prev => [...prev, id]);
+        } else {
+          setLikedSongIds(prev => prev.filter(x => x !== id));
+        }
+      } else {
+        alert("操作失败: " + (data.msg || "请重试"));
+      }
+    } catch (err) {
+      console.error("收藏失败:", err);
     }
   };
 
@@ -1378,7 +1444,7 @@ export default function App() {
     try {
       setIsMusicLoading(true);
       const cookieStr = encodeURIComponent(cookie);
-      const res = await fetch(`${MUSIC_API}/recommend/songs?cookie=${cookieStr}`);
+      const res = await fetch(`${MUSIC_API}/recommend/songs?cookie=${cookieStr}&timestamp=${Date.now()}`);
       const data = await res.json();
 
       if (data.code === 200) {
@@ -1390,13 +1456,58 @@ export default function App() {
           albumArt: s.al.picUrl
         })));
         setMusicMode('recommend');
-      } else {
-        alert('获取推荐失败，请确保已登录');
+        // 同时获取推荐资源 (歌单)
+        fetchRecommendPlaylists();
       }
     } catch (err) {
-      console.error("获取日推失败:", err);
+      console.error("获取每日推荐失败:", err);
     } finally {
       setIsMusicLoading(false);
+    }
+  };
+
+  // 4.1.1 获取推荐资源 (歌单)
+  const fetchRecommendPlaylists = async () => {
+    try {
+      const cookieStr = encodeURIComponent(cookie);
+      const res = await fetch(`${MUSIC_API}/recommend/resource?cookie=${cookieStr}&timestamp=${Date.now()}`);
+      const data = await res.json();
+      if (data.code === 200) {
+        setRecommendPlaylists(data.recommend.map(pl => ({
+          name: pl.name,
+          img: pl.picUrl,
+          id: pl.id,
+          count: pl.trackCount,
+          creator: pl.creator.nickname
+        })));
+      }
+    } catch (err) {
+      console.error("获取推荐歌单失败:", err);
+    }
+  };
+
+  // 4.1.2 全局刷新功能
+  const handleRefreshMusic = () => {
+    switch (musicMode) {
+      case 'playlist':
+        if (showSongList && currentTrack) {
+          // 如果正在看歌单列表，刷新当前列表 (假设知道当前 pid)
+          // 暂时简化为刷新歌单总列表
+          fetchMusicUserInfo(cookie);
+          setShowSongList(false);
+        } else {
+          fetchMusicUserInfo(cookie);
+        }
+        break;
+      case 'recommend':
+        fetchDailyRecommend();
+        break;
+      case 'fm':
+        startFM();
+        break;
+      case 'history':
+        fetchListeningHistory();
+        break;
     }
   };
 
@@ -1935,9 +2046,18 @@ export default function App() {
             <div className="w-80 h-full p-6 bg-black/70 backdrop-blur-2xl border border-white/10 rounded-3xl pointer-events-auto flex flex-col overflow-hidden">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-sm font-light tracking-widest uppercase text-blue-200">音乐指令中心</h3>
-                <div className="flex items-center gap-2">
-                  <div className={`w-1.5 h-1.5 rounded-full ${musicUser ? 'bg-green-500' : 'bg-red-500'} animate-pulse`} />
-                  <span className="text-[10px] text-white/30 tracking-tight">{musicUser ? '已连接' : '未登录'}</span>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={handleRefreshMusic}
+                    title="刷新数据"
+                    className="p-1.5 bg-white/5 hover:bg-white/10 rounded-lg transition-all text-white/40 hover:text-blue-400 group"
+                  >
+                    <span className={`block transition-transform duration-500 ${isMusicLoading ? 'animate-spin' : 'group-hover:rotate-180'}`}>🔃</span>
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <div className={`w-1.5 h-1.5 rounded-full ${musicUser ? 'bg-green-500' : 'bg-red-500'} animate-pulse`} />
+                    <span className="text-[10px] text-white/30 tracking-tight">{musicUser ? '已连接' : '未登录'}</span>
+                  </div>
                 </div>
               </div>
 
@@ -2024,13 +2144,15 @@ export default function App() {
                               <button
                                 key={idx}
                                 onClick={() => fetchPlaylistSongs(pl.id)}
-                                className="w-full p-3 flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-left group"
+                                className={`w-full p-3 flex items-center gap-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-left group ${pl.isLikedList ? 'border border-red-500/20 bg-red-500/5' : ''}`}
                               >
-                                <div className="w-8 h-8 bg-blue-500/20 rounded-lg flex items-center justify-center overflow-hidden">
-                                  {pl.img ? <img src={pl.img} className="w-full h-full object-cover" /> : <span className="text-xs text-blue-400">♫</span>}
+                                <div className={`w-8 h-8 rounded-lg flex items-center justify-center overflow-hidden ${pl.isLikedList ? 'bg-red-500/20' : 'bg-blue-500/20'}`}>
+                                  {pl.isLikedList ? <span className="text-red-400 text-xs text-center">❤️</span> : (pl.img ? <img src={pl.img} className="w-full h-full object-cover" /> : <span className="text-xs text-blue-400">♫</span>)}
                                 </div>
                                 <div className="flex-1 min-w-0">
-                                  <p className="text-[11px] text-white/60 group-hover:text-blue-200 truncate">{pl.name}</p>
+                                  <p className={`text-[11px] group-hover:text-blue-200 truncate ${pl.isLikedList ? 'text-red-200 font-medium' : 'text-white/60'}`}>
+                                    {pl.isLikedList ? '❤️ 我收藏的音乐' : pl.name}
+                                  </p>
                                   <p className="text-[9px] text-white/20">{pl.count} 首歌曲</p>
                                 </div>
                               </button>
@@ -2065,7 +2187,35 @@ export default function App() {
                     {/* --- 模式：每日推荐 --- */}
                     {musicMode === 'recommend' && (
                       <>
-                        <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">📅 每日推荐 ({recommendSongs.length})</p>
+                        {/* 推荐歌单部分 */}
+                        {recommendPlaylists.length > 0 && (
+                          <div className="mb-6">
+                            <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-3 px-1">🔮 推荐歌单 Recommended</p>
+                            <div className="flex gap-3 overflow-x-auto no-scrollbar pb-2 scroll-smooth"
+                              onWheel={(e) => {
+                                if (e.deltaY !== 0) {
+                                  e.currentTarget.scrollLeft += e.deltaY;
+                                  e.preventDefault();
+                                }
+                              }}>
+                              {recommendPlaylists.map((pl, idx) => (
+                                <button
+                                  key={idx}
+                                  onClick={() => fetchPlaylistSongs(pl.id)}
+                                  className="flex-shrink-0 w-28 group"
+                                >
+                                  <div className="w-28 h-28 rounded-2xl overflow-hidden mb-2 relative">
+                                    <img src={pl.img} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
+                                    <div className="absolute inset-0 bg-black/20 group-hover:bg-black/0 transition-all" />
+                                  </div>
+                                  <p className="text-[10px] text-white/60 truncate group-hover:text-blue-300 transition-colors">{pl.name}</p>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-2 px-1">📅 每日推荐歌曲 ({recommendSongs.length})</p>
                         {recommendSongs.map((song, idx) => (
                           <button
                             key={idx}
@@ -2098,8 +2248,11 @@ export default function App() {
                         <p className="text-[10px] text-white/40 mb-8">{currentTrack?.artist || "听懂你的心声"}</p>
 
                         <div className="flex gap-4">
-                          <button onClick={() => { /* 喜欢逻辑暂留坑 */ alert('喜欢功能开发中') }} className="w-10 h-10 rounded-full bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-500 border border-white/10 flex items-center justify-center transition-all">
-                            ❤
+                          <button
+                            onClick={() => currentTrack && handleLikeSong(currentTrack.id, !likedSongIds.includes(currentTrack.id))}
+                            className={`w-10 h-10 rounded-full bg-white/5 border border-white/10 flex items-center justify-center transition-all ${likedSongIds.includes(currentTrack?.id) ? 'text-red-500 scale-110 bg-red-500/10' : 'text-white/40 hover:text-white/60'}`}
+                          >
+                            {likedSongIds.includes(currentTrack?.id) ? '❤️' : '🤍'}
                           </button>
                           <button onClick={playNextFM} className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 text-white border border-white/10 flex items-center justify-center transition-all">
                             ➡
@@ -2143,7 +2296,17 @@ export default function App() {
                         <img src={currentTrack?.albumArt || "https://y.gtimg.cn/music/photo_new/T002R300x300M000002e3nFs3ZIs62.jpg"} className="w-full h-full object-cover" alt="album" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs text-blue-100 truncate">{currentTrack?.name || "未在播放"}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs text-blue-100 truncate">{currentTrack?.name || "未在播放"}</p>
+                          {currentTrack && (
+                            <button
+                              onClick={() => handleLikeSong(currentTrack.id, !likedSongIds.includes(currentTrack.id))}
+                              className={`transition-all ${likedSongIds.includes(currentTrack.id) ? 'text-red-500 scale-110' : 'text-white/20 hover:text-white/40'}`}
+                            >
+                              {likedSongIds.includes(currentTrack.id) ? '❤️' : '🤍'}
+                            </button>
+                          )}
+                        </div>
                         <p className="text-[10px] text-white/30 truncate">{currentTrack?.artist || "星辰旋律"}</p>
                       </div>
                     </div>
