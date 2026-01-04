@@ -20,6 +20,12 @@ const stellarVertexShader = `
   uniform float uAudioHigh;   
   uniform float uAudioLevel;  
   uniform float uEnvRotation; 
+  uniform float uVortexHeight; 
+  uniform float uVortexRhythm;
+  uniform float uVortexSpeed;
+  uniform float uSubjectSize;
+  uniform float uSubjectRandomness;
+  uniform float uSubjectWiggle;
   
   attribute float size;
   attribute vec3 customColor;
@@ -39,6 +45,7 @@ const stellarVertexShader = `
   varying float vTwinkle;
   varying float vIsRing;
   varying float vFormation;
+  varying float vIsSubject;
 
   // GLSL 插值
   float easeInOutCubic(float t) {
@@ -69,18 +76,18 @@ const stellarVertexShader = `
     // [主体逻辑 - 结构锁定] 
     // 仅保留 Z 轴 (深度方向) 的微弱呼吸，XY 轴绝对静止，确保主体清晰
     if (isRing < 0.5 && dispersion < 0.1) {
-       float wiggleAmp = 0.1 + uAudioLow * 0.2; 
+       float wiggleAmp = (0.1 + uAudioLow * 0.2) * uSubjectWiggle; 
        float wiggle = uTime * 0.8 + twinkleSpeed * 10.0;
        
        vec3 dir = normalize(baseTargetPos);
-       targetPos += dir * uAudioLow * 1.0; 
+       targetPos += dir * uAudioLow * 1.0 * uSubjectWiggle; 
        targetPos.z += sin(wiggle) * wiggleAmp;
     }
 
     // [边缘柔化飘散]
     if (isRing < 0.5 && dispersion < 0.1) {
-        float edgeSoftness = (1.3 - aBrightness); 
-        float musicDrift = 1.0 + uAudioLevel * 2.0;
+        float edgeSoftness = (1.3 - aBrightness) * uSubjectRandomness; 
+        float musicDrift = (1.0 + uAudioLevel * 2.0) * uSubjectRandomness;
         vec3 drift = aRandomDir * edgeSoftness * sin(uTime * 0.4 + twinkleSpeed * 5.0) * 0.4 * musicDrift;
         targetPos += drift;
     }
@@ -109,15 +116,15 @@ const stellarVertexShader = `
     if (isRing > 0.5) {
         // [底部吸积盘] - 始终保持旋转
         float ringRadius = length(baseTargetPos.xz);
-        float ringSpeed = uTime * 0.08 + uAudioLow * 0.02; 
+        float ringSpeed = uTime * uVortexSpeed + uAudioLow * 0.02; 
         float currentRingAngle = atan(baseTargetPos.z, baseTargetPos.x) + ringSpeed;
         
         // 音乐均衡器效果
         float waveLow = sin(currentRingAngle * 6.0 + uTime * 2.0); 
         float waveHigh = sin(currentRingAngle * 20.0 - uTime * 5.0);
-        float equalizer = abs(waveLow) * uAudioLow * 4.0 + abs(waveHigh) * uAudioHigh * 1.5;
+        float equalizer = (abs(waveLow) * uAudioLow * 4.0 + abs(waveHigh) * uAudioHigh * 1.5) * (uVortexRhythm / 4.0);
         
-        float lift = -30.0 + uFormation * 5.0;
+        float lift = uVortexHeight + uFormation * 5.0;
         float finalY = lift + sin(uTime * 0.8 + ringRadius * 0.5) * 1.5 + equalizer;
         
         currentPos = vec3(cos(currentRingAngle) * ringRadius, finalY, sin(currentRingAngle) * ringRadius);
@@ -148,7 +155,7 @@ const stellarVertexShader = `
         
         // 喷发过程中的湍流只在 t < 0.9 时生效，归位后完全消失
         if(t < 0.9) {
-            float turbulence = (1.0 - t) * 1.5; 
+            float turbulence = (1.0 - t) * 1.5 * uSubjectWiggle; 
             midPos.x += sin(uTime * 5.0 + baseTargetPos.y) * turbulence;
             midPos.z += cos(uTime * 4.0 + baseTargetPos.y) * turbulence;
         } else {
@@ -158,7 +165,7 @@ const stellarVertexShader = `
                 float sprayCycle = fract(uTime * 0.4 + twinkleSpeed * 20.0);
                 vec3 sprayDir = normalize(aRandomDir + vec3(0.0, 0.3, 0.0));
                 // 音乐增强喷发
-                vec3 drift = sprayDir * (0.5 + edgeFactor * 4.5) * sprayCycle * (1.0 + uAudioLow * 0.8);
+                vec3 drift = sprayDir * (0.5 + edgeFactor * 4.5) * sprayCycle * (1.0 + uAudioLow * 0.8) * uSubjectRandomness;
                 midPos += drift;
                 alphaOut *= (1.0 - sprayCycle * 0.8);
             }
@@ -183,6 +190,7 @@ const stellarVertexShader = `
     float finalSize = size;
     if(isLarge > 0.5) finalSize *= 3.0; 
     if(isRing > 0.5) finalSize *= 1.3; 
+    if(isRing < 0.5 && dispersion < 0.1) finalSize *= uSubjectSize;
     
     // 音乐让粒子脉动
     float beatPulse = 1.0 + uAudioLow * 0.3;
@@ -194,6 +202,7 @@ const stellarVertexShader = `
     vAlpha = alphaOut;
     vIsRing = isRing;
     vFormation = t;
+    vIsSubject = (isRing < 0.5 && dispersion < 0.1) ? 1.0 : 0.0;
   }
 `;
 
@@ -204,6 +213,7 @@ const stellarFragmentShader = `
   varying float vTwinkle;
   varying float vIsRing;
   varying float vFormation;
+  varying float vIsSubject;
   
   uniform float uAudioLow;
   uniform float uAudioHigh;
@@ -211,6 +221,8 @@ const stellarFragmentShader = `
   uniform float uBrightness;
   uniform float uContrast;
   uniform float uTwinkleStrength;
+  uniform float uVortexColorShift;
+  uniform float uSubjectBrightness;
 
   void main() {
     vec2 cxy = 2.0 * gl_PointCoord - 1.0;
@@ -239,10 +251,15 @@ const stellarFragmentShader = `
     
     vec3 baseColor = contrastedColor * (uBrightness + vTwinkle * uTwinkleStrength);
     
+    // 主体亮度独立调节
+    if (vIsSubject > 0.5) {
+        baseColor *= uSubjectBrightness;
+    }
+
     // 律动增强：漩涡亮度随节拍爆发 (vIsRing > 0.5 且 vFormation > 0.8)
     float pulse = 1.0;
     if (vIsRing > 0.5 && vFormation > 0.8) {
-        pulse = 1.0 + uAudioLow * 1.5;
+        pulse = 1.0 + uAudioLow * (1.5 * uVortexColorShift * 2.0);
     }
     baseColor *= pulse;
 
@@ -283,6 +300,18 @@ export default function App() {
   const [mouseX, setMouseX] = useState(null);             // 鼠标在底栏的 X 坐标
   const [stayDuration, setStayDuration] = useState(3);    // 停留时间 (秒)
   const [morphDuration, setMorphDuration] = useState(6);  // 变换时长 (秒)
+
+  // 漩涡调节参数
+  const [vortexHeight, setVortexHeight] = useState(-30);
+  const [vortexRhythm, setVortexRhythm] = useState(4.0);
+  const [vortexSpeed, setVortexSpeed] = useState(0.08);
+  const [vortexColorShift, setVortexColorShift] = useState(0.5);
+
+  // 主体粒子调节参数
+  const [subjectSize, setSubjectSize] = useState(1.0);
+  const [subjectBrightness, setSubjectBrightness] = useState(1.0);
+  const [subjectRandomness, setSubjectRandomness] = useState(1.0);
+  const [subjectWiggle, setSubjectWiggle] = useState(1.0);
 
   // Netease 音乐相关状态
   const [musicUser, setMusicUser] = useState(null);       // 用户信息
@@ -342,16 +371,20 @@ export default function App() {
   // 使用 ref 保存最新的参数值，供动画循环使用
   const paramsRef = useRef({
     saturation, brightness, contrast, twinkleStrength, morph, envRotation,
-    lyricScale, lyricSpeed, lyricOffsetY
+    lyricScale, lyricSpeed, lyricOffsetY,
+    vortexHeight, vortexRhythm, vortexSpeed, vortexColorShift,
+    subjectSize, subjectBrightness, subjectRandomness, subjectWiggle
   });
 
   // 每次参数变化时更新 ref
   useEffect(() => {
     paramsRef.current = {
       saturation, brightness, contrast, twinkleStrength, morph, envRotation,
-      lyricScale, lyricSpeed, lyricOffsetY
+      lyricScale, lyricSpeed, lyricOffsetY,
+      vortexHeight, vortexRhythm, vortexSpeed, vortexColorShift,
+      subjectSize, subjectBrightness, subjectRandomness, subjectWiggle
     };
-  }, [saturation, brightness, contrast, twinkleStrength, morph, envRotation, lyricScale, lyricSpeed, lyricOffsetY]);
+  }, [saturation, brightness, contrast, twinkleStrength, morph, envRotation, lyricScale, lyricSpeed, lyricOffsetY, vortexHeight, vortexRhythm, vortexSpeed, vortexColorShift, subjectSize, subjectBrightness, subjectRandomness, subjectWiggle]);
 
   // --- 登录持久化逻辑 ---
   useEffect(() => {
@@ -373,6 +406,46 @@ export default function App() {
     setLyrics([]);
     setCurrentLyric("");
   };
+
+  // --- 全局配置保存逻辑 ---
+  const saveSettings = () => {
+    const settings = {
+      saturation, brightness, contrast, twinkleStrength, envRotation,
+      vortexHeight, vortexRhythm, vortexSpeed, vortexColorShift,
+      subjectSize, subjectBrightness, subjectRandomness, subjectWiggle,
+      lyricScale, lyricSpeed, lyricOffsetY,
+      stayDuration, morphDuration
+    };
+    localStorage.setItem('stellar_galaxy_settings', JSON.stringify(settings));
+    alert('💾 全局偏好已成功存档至星影。');
+  };
+
+  useEffect(() => {
+    const saved = localStorage.getItem('stellar_galaxy_settings');
+    if (saved) {
+      try {
+        const s = JSON.parse(saved);
+        if (s.saturation !== undefined) setSaturation(s.saturation);
+        if (s.brightness !== undefined) setBrightness(s.brightness);
+        if (s.contrast !== undefined) setContrast(s.contrast);
+        if (s.twinkleStrength !== undefined) setTwinkleStrength(s.twinkleStrength);
+        if (s.envRotation !== undefined) setEnvRotation(s.envRotation);
+        if (s.vortexHeight !== undefined) setVortexHeight(s.vortexHeight);
+        if (s.vortexRhythm !== undefined) setVortexRhythm(s.vortexRhythm);
+        if (s.vortexSpeed !== undefined) setVortexSpeed(s.vortexSpeed);
+        if (s.vortexColorShift !== undefined) setVortexColorShift(s.vortexColorShift);
+        if (s.subjectSize !== undefined) setSubjectSize(s.subjectSize);
+        if (s.subjectBrightness !== undefined) setSubjectBrightness(s.subjectBrightness);
+        if (s.subjectRandomness !== undefined) setSubjectRandomness(s.subjectRandomness);
+        if (s.subjectWiggle !== undefined) setSubjectWiggle(s.subjectWiggle);
+        if (s.lyricScale !== undefined) setLyricScale(s.lyricScale);
+        if (s.lyricSpeed !== undefined) setLyricSpeed(s.lyricSpeed);
+        if (s.lyricOffsetY !== undefined) setLyricOffsetY(s.lyricOffsetY);
+        if (s.stayDuration !== undefined) setStayDuration(s.stayDuration);
+        if (s.morphDuration !== undefined) setMorphDuration(s.morphDuration);
+      } catch (e) { console.error("加载设置失败", e); }
+    }
+  }, []);
 
   useEffect(() => {
     console.log('useEffect 被调用');
@@ -470,6 +543,16 @@ export default function App() {
           m.uniforms.uAudioMid.value = THREE.MathUtils.lerp(m.uniforms.uAudioMid.value, mid, 0.3);
           m.uniforms.uAudioHigh.value = THREE.MathUtils.lerp(m.uniforms.uAudioHigh.value, treble, 0.5);
           m.uniforms.uAudioLevel.value = THREE.MathUtils.lerp(m.uniforms.uAudioLevel.value, level, 0.3);
+
+          if (m.uniforms.uVortexHeight) m.uniforms.uVortexHeight.value = params.vortexHeight;
+          if (m.uniforms.uVortexRhythm) m.uniforms.uVortexRhythm.value = params.vortexRhythm;
+          if (m.uniforms.uVortexSpeed) m.uniforms.uVortexSpeed.value = params.vortexSpeed;
+          if (m.uniforms.uVortexColorShift) m.uniforms.uVortexColorShift.value = params.vortexColorShift;
+
+          if (m.uniforms.uSubjectSize) m.uniforms.uSubjectSize.value = params.subjectSize;
+          if (m.uniforms.uSubjectBrightness) m.uniforms.uSubjectBrightness.value = params.subjectBrightness;
+          if (m.uniforms.uSubjectRandomness) m.uniforms.uSubjectRandomness.value = params.subjectRandomness;
+          if (m.uniforms.uSubjectWiggle) m.uniforms.uSubjectWiggle.value = params.subjectWiggle;
 
           if (startTime > 0) {
             const dt = time - startTime;
@@ -897,7 +980,15 @@ export default function App() {
         uTime: { value: 0 }, uFormation: { value: 1.0 }, uMorph: { value: 0 },
         uAudioLow: { value: 0.0 }, uAudioMid: { value: 0.0 }, uAudioHigh: { value: 0.0 }, uAudioLevel: { value: 0.0 },
         uSaturation: { value: 0.5 }, uBrightness: { value: 1.1 }, uContrast: { value: 1.2 }, uTwinkleStrength: { value: 0.3 },
-        uEnvRotation: { value: 0.1 }
+        uEnvRotation: { value: 0.1 },
+        uVortexHeight: { value: -30.0 },
+        uVortexRhythm: { value: 4.0 },
+        uVortexSpeed: { value: 0.08 },
+        uVortexColorShift: { value: 0.5 },
+        uSubjectSize: { value: 1.0 },
+        uSubjectBrightness: { value: 1.0 },
+        uSubjectRandomness: { value: 1.0 },
+        uSubjectWiggle: { value: 1.0 }
       },
       vertexShader: stellarVertexShader,
       fragmentShader: stellarFragmentShader,
@@ -1585,6 +1676,109 @@ export default function App() {
                   </div>
                 </details>
 
+                {/* 漩涡设置 (折叠面板) */}
+                <details className="mt-4 group open:bg-white/5 rounded-xl transition-all border border-transparent open:border-white/10 overflow-hidden">
+                  <summary className="flex items-center justify-between p-3 cursor-pointer hover:bg-white/5 transition-all">
+                    <span className="text-[10px] text-blue-300/80 uppercase tracking-widest font-bold group-open:text-blue-400">漩涡设置 Vortex Settings</span>
+                    <span className="text-white/20 text-[8px] transform group-open:rotate-180 transition-transform">▼</span>
+                  </summary>
+                  <div className="p-3 pt-0 space-y-4">
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">漩涡高度 Height</label>
+                        <span className="text-[9px] font-mono text-blue-400/80">{vortexHeight.toFixed(0)}</span>
+                      </div>
+                      <input
+                        type="range" min="-60" max="10" step="1"
+                        value={vortexHeight}
+                        onChange={(e) => setVortexHeight(parseFloat(e.target.value))}
+                        className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">律动强度 Rhythm</label>
+                        <span className="text-[9px] font-mono text-blue-400/80">{vortexRhythm.toFixed(1)}</span>
+                      </div>
+                      <input
+                        type="range" min="0" max="10" step="0.1"
+                        value={vortexRhythm}
+                        onChange={(e) => setVortexRhythm(parseFloat(e.target.value))}
+                        className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">旋转速度 Speed</label>
+                        <span className="text-[9px] font-mono text-blue-400/80">{vortexSpeed.toFixed(3)}</span>
+                      </div>
+                      <input
+                        type="range" min="0" max="0.5" step="0.005"
+                        value={vortexSpeed}
+                        onChange={(e) => setVortexSpeed(parseFloat(e.target.value))}
+                        className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">喷发亮度 Burst</label>
+                        <span className="text-[9px] font-mono text-blue-400/80">{vortexColorShift.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range" min="0" max="2" step="0.05"
+                        value={vortexColorShift}
+                        onChange={(e) => setVortexColorShift(parseFloat(e.target.value))}
+                        className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                      />
+                    </div>
+                  </div>
+                </details>
+
+                {/* --- 主体粒子调节 --- */}
+                <details className="group border-b border-white/5 pb-4">
+                  <summary className="flex items-center justify-between cursor-pointer list-none py-2 text-blue-200/80 hover:text-blue-100 transition-colors">
+                    <span className="text-[10px] uppercase tracking-[0.2em] font-medium flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                      主体控制 Subject
+                    </span>
+                    <span className="text-xs transition-transform group-open:rotate-180 opacity-40">▼</span>
+                  </summary>
+
+                  <div className="pt-3 space-y-4 px-1">
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">粒子大小 Size</label>
+                        <span className="text-[9px] font-mono text-blue-400/80">{subjectSize.toFixed(1)}</span>
+                      </div>
+                      <input type="range" min="0.5" max="2.5" step="0.1" value={subjectSize} onChange={(e) => setSubjectSize(parseFloat(e.target.value))} className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">主体亮度 Brightness</label>
+                        <span className="text-[9px] font-mono text-orange-400/80">{subjectBrightness.toFixed(1)}</span>
+                      </div>
+                      <input type="range" min="0.2" max="3.0" step="0.1" value={subjectBrightness} onChange={(e) => setSubjectBrightness(parseFloat(e.target.value))} className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-orange-500" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">随机散落 Randomness</label>
+                        <span className="text-[9px] font-mono text-purple-400/80">{subjectRandomness.toFixed(2)}</span>
+                      </div>
+                      <input type="range" min="0.0" max="1.0" step="0.01" value={subjectRandomness} onChange={(e) => setSubjectRandomness(parseFloat(e.target.value))} className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-purple-500" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[9px] text-white/30 uppercase tracking-[0.2em]">主体微动 Wiggle</label>
+                        <span className="text-[9px] font-mono text-teal-400/80">{subjectWiggle.toFixed(2)}</span>
+                      </div>
+                      <input type="range" min="0.0" max="1.0" step="0.01" value={subjectWiggle} onChange={(e) => setSubjectWiggle(parseFloat(e.target.value))} className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-teal-500" />
+                    </div>
+                  </div>
+                </details>
+
                 <div className="h-[1px] w-full bg-white/5 my-2" />
 
                 <div className="h-[1px] w-full bg-white/5 my-2" />
@@ -1600,15 +1794,24 @@ export default function App() {
                 </div>
 
                 <button
+                  onClick={saveSettings}
+                  className="w-full py-3 bg-gradient-to-r from-blue-600/20 to-purple-600/20 hover:from-blue-600/40 hover:to-purple-600/40 border border-blue-500/30 rounded-full text-[10px] tracking-[0.3em] font-light uppercase text-blue-100 transition-all flex items-center justify-center gap-2 mb-2 shadow-lg shadow-blue-500/5 group"
+                >
+                  <span className="text-sm group-hover:scale-110 transition-transform">💾</span> 存档全局偏好 Save
+                </button>
+
+                <button
                   onClick={() => {
                     setSaturation(0.5); setBrightness(1.1); setContrast(1.2); setTwinkleStrength(0.3);
                     setStayDuration(3); setMorphDuration(6);
+                    setVortexHeight(-30); setVortexRhythm(4.0); setVortexSpeed(0.08); setVortexColorShift(0.5);
+                    setSubjectSize(1.0); setSubjectBrightness(1.0); setSubjectRandomness(1.0); setSubjectWiggle(1.0);
                     setMorph(0); setIsAutoCycle(false);
                     setShowLyrics(true);
                   }}
-                  className="w-full py-2 text-[9px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full transition-all"
+                  className="w-full py-2 text-[10px] tracking-wider uppercase bg-white/5 hover:bg-white/10 border border-white/10 rounded-full transition-all text-white/40 hover:text-white/80"
                 >
-                  重置色彩与节奏
+                  重置色彩与节奏 Reset
                 </button>
 
                 {/* 集成式堆叠图库 */}
