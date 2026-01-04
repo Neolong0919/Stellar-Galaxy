@@ -352,6 +352,8 @@ export default function App() {
   const [likedSongIds, setLikedSongIds] = useState([]);   // 用户喜欢的歌曲 ID 列表
   const [recommendPlaylists, setRecommendPlaylists] = useState([]); // 每日推荐歌单
 
+  const scrollSpeedRef = useRef(0); // 新增：用于平滑控制边缘滚动速度
+
   // 歌词自定义参数
   const [lyricScale, setLyricScale] = useState(1.0);      // 大小
   const [lyricDensity, setLyricDensity] = useState(2);    // 密度 (step: 1非常密 - 5稀疏)
@@ -2191,13 +2193,42 @@ export default function App() {
                         {recommendPlaylists.length > 0 && (
                           <div className="mb-6">
                             <p className="text-[9px] text-white/20 uppercase tracking-[0.2em] mb-3 px-1">🔮 推荐歌单 Recommended</p>
-                            <div className="flex gap-3 overflow-x-auto no-scrollbar pb-2 scroll-smooth"
-                              onWheel={(e) => {
-                                if (e.deltaY !== 0) {
-                                  e.currentTarget.scrollLeft += e.deltaY;
-                                  e.preventDefault();
+                            <div
+                              className="flex gap-3 overflow-x-auto no-scrollbar pb-2 scroll-smooth"
+                              onMouseMove={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                const x = e.clientX - rect.left;
+                                const width = rect.width;
+                                const edgeThreshold = 80; // 稍微扩大触发范围保证灵敏度
+
+                                if (x < edgeThreshold) {
+                                  scrollSpeedRef.current = (edgeThreshold - x) / 4; // 越往左越快
+                                  if (!scrollScrollInterval.current) {
+                                    scrollScrollInterval.current = setInterval(() => {
+                                      e.currentTarget.scrollLeft -= scrollSpeedRef.current;
+                                    }, 16);
+                                  }
+                                } else if (x > width - edgeThreshold) {
+                                  scrollSpeedRef.current = (x - (width - edgeThreshold)) / 4; // 越往右越快
+                                  if (!scrollScrollInterval.current) {
+                                    scrollScrollInterval.current = setInterval(() => {
+                                      e.currentTarget.scrollLeft += scrollSpeedRef.current;
+                                    }, 16);
+                                  }
+                                } else {
+                                  if (scrollScrollInterval.current) {
+                                    clearInterval(scrollScrollInterval.current);
+                                    scrollScrollInterval.current = null;
+                                  }
                                 }
-                              }}>
+                              }}
+                              onMouseLeave={() => {
+                                if (scrollScrollInterval.current) {
+                                  clearInterval(scrollScrollInterval.current);
+                                  scrollScrollInterval.current = null;
+                                }
+                              }}
+                            >
                               {recommendPlaylists.map((pl, idx) => (
                                 <button
                                   key={idx}
